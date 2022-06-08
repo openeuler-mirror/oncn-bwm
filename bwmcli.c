@@ -25,6 +25,43 @@
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 
+static struct TcCmd g_enableSeq[] = {
+    {
+        .cmdStr = "tc qdisc del dev %s root >/dev/null 2>&1",
+        .verifyRet = false,
+    },
+    {
+        .cmdStr = "tc qdisc del dev %s clsact >/dev/null 2>&1",
+        .verifyRet = false,
+    },
+    {
+        .cmdStr = "tc qdisc add dev %s root fq",
+        .verifyRet = true,
+    },
+    {
+        .cmdStr = "tc qdisc add dev %s clsact",
+        .verifyRet = true,
+    },
+    {
+        .cmdStr = "tc filter add dev %s egress bpf direct-action obj " TC_PROG " sec tc >/dev/null 2>&1",
+        .verifyRet = true,
+    }
+};
+
+static struct TcCmd g_disableSeq[] = {
+    {
+        .cmdStr = "tc filter del dev %s egress",
+        .verifyRet = false,
+    },
+    {
+        .cmdStr = "tc qdisc del dev %s clsact",
+        .verifyRet = false,
+    },
+    {
+        .cmdStr = "tc qdisc del dev %s root",
+        .verifyRet = false,
+    },
+};
 
 static const struct option g_helps[] = {
     {"Display this information",                no_argument,            NULL, 'h' },
@@ -98,6 +135,22 @@ static struct CfgOption g_cfgOptions[] = {
     },
     { }
 };
+
+static void Usage(char *argv[])
+{
+    int i;
+
+    BWM_LOG_INFO("Usage: %s <option(s)>\n", argv[0]);
+    BWM_LOG_INFO(" Options are:\n");
+    for (i = 0; g_helps[i].name != NULL; i++) {
+        BWM_LOG_INFO(" -%c --%-18s", g_longOptions[i].val, g_longOptions[i].name);
+        if (strlen(g_longOptions[i].name) > 25) { // 25 means line length
+            BWM_LOG_INFO("\n\t\t\t%s\n", g_helps[i].name);
+        } else {
+            BWM_LOG_INFO("%s\n", g_helps[i].name);
+        }
+    }
+}
 
 static int ProgLoad(char *prog, struct bpf_object ** obj, int * bpfprogFd)
 {
@@ -288,6 +341,12 @@ static int CgrpV2PrioSet(const char *cgrpPath, int prio)
         BWM_LOG_ERR("ERROR: Could not update map element. errno:%d\n", errno);
         goto err;
     }
+
+    /* Only one program is allowed to be attached to a cgroup with
+     * NONE or BPF_F_ALLOW_OVERRIDE flag.
+     * Attaching another program on top of NONE or BPF_F_ALLOW_OVERRIDE will
+     * release old program and attach the new one. Attach flags has to match.
+     */
     (void)bpf_prog_detach(cgFd, BPF_CGROUP_INET_EGRESS);
 
     if (bpf_prog_attach(bpfprogFd, cgFd, BPF_CGROUP_INET_EGRESS, 0)) {
@@ -346,6 +405,300 @@ end:
     }
     (void)close(cgFd);
     return ret;
+}
+
+static int NetdevEnabledSub(const char *format, const char *ethdev)
+{
+    int ret;
+    ret = snprintf(g_cmdBuf, MAX_CMD_LEN, format, ethdev);
+    if (ret < 0) {
+        return 0;
+    }
+
+    ret = system(g_cmdBuf);
+    if (ret < 0) {
+        BWM_LOG_ERR("execute cmd[%s] error: %d\n", g_cmdBuf, ret);
+        return 0;
+    }
+    ret = WEXITSTATUS(ret);
+    if (ret != 0) {
+        return 0;
+    }
+    return 1;
+}
+
+// return: 1 is enabled. 0 is disabled.
+static int NetdevEnabled(const char *ethdev)
+{
+    const char *format = "tc filter show dev %s egress|grep bwm_tc.o >/dev/null 2>&1";
+    if (NetdevEnabledSub(format, ethdev) == 0) {
+        return 0;
+    }
+
+    const char *format1 = "tc qdisc ls dev %s|grep \"qdisc fq \" >/dev/null 2>&1";
+    if (NetdevEnabledSub(format1, ethdev) == 0) {
+        return 0;
+    }
+
+    return 1;
+}
+
+static int DisableSpecificNetdevice(const char *ethdev, const void *unused)
+{
+    size_t i;
+    int ret;
+
+    BWM_LOG_DEBUG("DisableSpecificNetdevice: %s\n", ethdev);
+
+    if (NetdevEnabled(ethdev) == 0) {
+        BWM_LOG_INFO("%s has already disabled\n", ethdev);
+        return EXIT_OK;
+    }
+
+    for (i = 0; i < sizeof(g_disableSeq) / sizeof(struct TcCmd); i++) {
+        ret = snprintf(g_cmdBuf, MAX_CMD_LEN, g_disableSeq[i].cmdStr, ethdev);
+        if (ret < 0 || g_cmdBuf[MAX_CMD_LEN - 1] != '\0') {
+            BWM_LOG_ERR("Invalid net device: %s\n", ethdev);
+            return EXIT_FAIL_OPTION;
+        }
+
+        ret = system(g_cmdBuf);
+        if (ret < 0) {
+            BWM_LOG_ERR("execute cmd[%s] error: %d\n", g_cmdBuf, ret);
+            return EXIT_FAIL;
+        }
+
+        ret = WEXITSTATUS(ret);
+        if (ret && g_disableSeq[i].verifyRet) {
+            BWM_LOG_ERR("execute cmd ret wrong: %s\n", g_disableSeq[i].cmdStr);
+            return EXIT_FAIL;
+        }
+    }
+
+    BWM_LOG_INFO("disable %s success\n", ethdev);
+    return EXIT_OK;
+}
+
+static bool execute_cmd(const char *format, const char *ethdev, const char *search)
+{
+    int ret;
+
+    ret = snprintf(g_cmdBuf, MAX_CMD_LEN, format, ethdev, search);
+    if (ret < 0 || g_cmdBuf[MAX_CMD_LEN - 1] != '\0') {
+        g_cmdBuf[MAX_CMD_LEN - 1] = '\0';
+        BWM_LOG_ERR("Invalid cmd: %s\n", g_cmdBuf);
+        return false;
+    }
+
+    ret = system(g_cmdBuf);
+    if (ret < 0) {
+        BWM_LOG_ERR("execute cmd[%s] error: %d\n", g_cmdBuf, ret);
+        return false;
+    }
+
+    ret = WEXITSTATUS(ret);
+    return ret == 0 ? 1 : 0;
+}
+
+// return: 1 is can be enabled. 0 is can't be enabled.
+static bool DefaultTc(const char *ethdev)
+{
+    char buf[IFNAMSIZ + 1] = {0};
+    int fd;
+    ssize_t size;
+    bool ret;
+
+    const char *format = "tc qdisc ls dev %s|grep %s >/dev/null 2>&1";
+
+    ret = execute_cmd(format, ethdev, "clsact");
+    if (ret) {
+        return 0;
+    }
+
+    // Only devices configured with default qdisc or no qdisc can be enabled.
+    fd = open("/proc/sys/net/core/default_qdisc", O_RDONLY);
+    if (fd >= 0) {
+        size = read(fd, buf, IFNAMSIZ);
+        (void)close(fd);
+        if (size <= 0) {
+            goto qdisc;
+        }
+
+        buf[size - 1] = '\0';
+        const char *bufChar = buf;
+        ret = execute_cmd(format, ethdev, bufChar);
+        if (ret) {
+            return ret;
+        }
+    }
+
+    ret = execute_cmd(format, ethdev, "noqueue");
+    if (ret) {
+        return ret;
+    }
+
+qdisc:
+    // Determine if there are other qdiscs
+    ret = execute_cmd(format, ethdev, "qdisc");
+    return ret == 0 ? 1 : 0;
+}
+
+static int EnableSpecificNetdevice(const char *ethdev, const void *unused)
+{
+    unsigned long i;
+    int ret;
+
+    BWM_LOG_DEBUG("EnableSpecificNetdevice: %s\n", ethdev);
+
+    if (NetdevEnabled(ethdev) == 1) {
+        BWM_LOG_INFO("%s has already enabled\n", ethdev);
+        return EXIT_OK;
+    }
+
+    if (!DefaultTc(ethdev)) {
+        BWM_LOG_INFO("%s has already enabled other TC\n", ethdev);
+        return EXIT_OK;
+    }
+
+    for (i = 0; i < sizeof(g_enableSeq) / sizeof(struct TcCmd); i++) {
+        ret = snprintf(g_cmdBuf, MAX_CMD_LEN, g_enableSeq[i].cmdStr, ethdev);
+        if (ret < 0 || g_cmdBuf[MAX_CMD_LEN - 1] != '\0') {
+            BWM_LOG_ERR("Invalid net device: %s\n", ethdev);
+            return EXIT_FAIL_OPTION;
+        }
+
+        ret = system(g_cmdBuf);
+        if (ret < 0) {
+            BWM_LOG_ERR("execute cmd[%s] error: %d\n", g_cmdBuf, ret);
+            goto clear;
+        }
+
+        ret = WEXITSTATUS(ret);
+        if (ret && g_enableSeq[i].verifyRet) {
+            BWM_LOG_ERR("execute cmd ret wrong: %s\n", g_enableSeq[i].cmdStr);
+            goto clear;
+        }
+    }
+
+    if (!InitCfgMap()) {
+        goto clear;
+    }
+
+    BWM_LOG_INFO("enable %s success\n", ethdev);
+    return EXIT_OK;
+
+clear:
+    (void)DisableSpecificNetdevice(ethdev, NULL);
+    return EXIT_FAIL;
+}
+
+// return: true is legal, false is illegal
+static bool CheckDevNameIsLegalChar(const char c)
+{
+    if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '-'
+        || c == '_') {
+        return true;
+    }
+    return false;
+}
+
+static int ForeachEthdev(NetdevCallback fn, const void *arg)
+{
+    int ret = EXIT_OK;
+    int i;
+    char *ptr = NULL;
+    char *start = NULL;
+    char buf[MAX_CMD_LEN];
+    FILE *fstream = NULL;
+    bool legalDev = true;
+
+    BWM_LOG_DEBUG("ForeachEthdev\n");
+
+    fstream = fopen("/proc/net/dev", "r");
+    if (fstream == NULL) {
+        return EXIT_FAIL;
+    }
+
+    while (fgets(buf, MAX_CMD_LEN, fstream) != NULL) {
+        ptr = strchr(buf, ':');
+        if (ptr == NULL) {
+            continue;
+        }
+
+        *ptr = '\0';
+
+        for (start = buf; *start == ' '; start++) {
+            ;
+        }
+
+        // arg is dev's name which cannot contain characters other than letters, numbers, '-' or "_".
+        for (i = 0; start[i] != 0; i++) {
+            if (!CheckDevNameIsLegalChar(start[i])) {
+                BWM_LOG_ERR("invalid dev name: dev name cannot contain illegal char\n");
+                legalDev = false;
+                break;
+            }
+            if (i == NAME_MAX) {
+                BWM_LOG_ERR("invalid dev name, too long\n");
+                legalDev = false;
+                break;
+            }
+        }
+
+        if (!legalDev) {
+            legalDev = true;
+            continue;
+        }
+
+        ret = fn(start, arg);
+        if (ret != EXIT_OK) {
+            (void)fclose(fstream);
+            return ret;
+        }
+    }
+
+    (void)fclose(fstream);
+    return ret;
+}
+
+static int DisableAllNetdevice(void)
+{
+    int ret;
+    BWM_LOG_DEBUG("DisableAllNetdevice\n");
+
+    ret = ForeachEthdev(DisableSpecificNetdevice, NULL);
+
+    return ret;
+}
+
+static int EnableAllNetdevice(void)
+{
+    int ret;
+
+    BWM_LOG_DEBUG("EnableAllNetdevice\n");
+
+    ret = ForeachEthdev(EnableSpecificNetdevice, NULL);
+    if (ret != EXIT_OK) {
+        (void)DisableAllNetdevice();
+    }
+
+    return ret;
+}
+
+
+static int DevStatShow(const char *ethdev, const void *arg)
+{
+    int ret;
+
+    ret = NetdevEnabled(ethdev);
+    BWM_LOG_INFO("%-16s: %s\n", ethdev, (ret == 0) ? "disabled" : "enabled");
+
+    return EXIT_OK;
+}
+
+static void PrintDevsStats(void)
+{
+    (void)ForeachEthdev(DevStatShow, NULL);
 }
 
 static struct CfgOption *FindOptions(const char *cfg)
@@ -417,6 +770,49 @@ static int CfgsInfo(int argc, char **argv, int isSet)
     optind++;
 
     return EXIT_OK;
+}
+
+static int NetdevCmp(const char *ethdev, const void *arg)
+{
+    return (strcmp(ethdev, arg) == 0) ? 1 : 0;
+}
+
+inline static int IsValidEthdev(const char *dev)
+{
+    return ForeachEthdev(NetdevCmp, dev);
+}
+
+static int ChangeNetdeviceStatus(int argc, char **argv, int enable)
+{
+    int ret;
+    char ethdev[NAME_MAX + 1] = {0};
+
+    if (optarg == NULL && (optind >= argc || argv[optind][0] == '-')) {
+        /* enable all eth device */
+        ret = (enable == 0) ? DisableAllNetdevice() : EnableAllNetdevice();
+        return ret;
+    }
+
+    if (optarg != NULL) {
+        (void)strncpy(ethdev, optarg, NAME_MAX);
+    } else {
+        (void)strncpy(ethdev, argv[optind], NAME_MAX);
+        optind++;
+    }
+
+    if (ethdev[NAME_MAX] != '\0') {
+        (void)fprintf(stderr, "invalid dev name: %s\n", optarg);
+        return EXIT_FAIL_OPTION;
+    }
+
+    if (!IsValidEthdev(ethdev)) {
+        BWM_LOG_INFO("invalid device: %s\n", ethdev);
+        return EXIT_FAIL_OPTION;
+    }
+
+    ret = (enable == 1) ? EnableSpecificNetdevice(ethdev, NULL) : DisableSpecificNetdevice(ethdev, NULL);
+
+    return ret;
 }
 
 static int GetCgroupPrio(void *cgrpPath)
