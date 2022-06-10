@@ -136,6 +136,29 @@ static struct CfgOption g_cfgOptions[] = {
     { }
 };
 
+static int BwmOption(const char *str)
+{
+    if (strlen(str) == 0) {
+        return BYTE_UNIT;
+    }
+
+    if (strlen(str) != UNIT_LEN) {
+        return -1;
+    }
+
+    if (strcmp(str, "kb") == 0 || strcmp(str, "KB") == 0) {
+        return KB_UNIT;
+    }
+    if (strcmp(str, "mb") == 0 || strcmp(str, "MB") == 0) {
+        return MB_UNIT;
+    }
+    if (strcmp(str, "gb") == 0 || strcmp(str, "GB") == 0) {
+        return GB_UNIT;
+    }
+
+    return -1;
+}
+
 static void Usage(char *argv[])
 {
     int i;
@@ -150,6 +173,43 @@ static void Usage(char *argv[])
             BWM_LOG_INFO("%s\n", g_helps[i].name);
         }
     }
+}
+
+static int BreakArgs(char *s, char *arg1, char *arg2, unsigned long arg1Len, unsigned long arg2Len)
+{
+    char *ns;
+    *arg2 = '\0';
+    *arg1 = '\0';
+
+    ns = strchr(s, ',');
+    if (ns) {
+        /* there was a comma arg2 should be the second arg */
+        *ns++ = '\0';
+        // Negative sign is not counted in the length
+        if (*ns != '-') {
+            arg2Len--;
+        }
+
+        if (strlen(ns) > arg2Len) {
+            return EXIT_FAIL_OPTION;
+        }
+        while ((*arg2++ = *ns++) != '\0') {
+            ;
+        }
+    }
+
+    if (*s != '-') {
+        arg1Len--;
+    }
+    if (strlen(s) > arg1Len) {
+        return EXIT_FAIL_OPTION;
+    }
+
+    while ((*arg1++ = *s++) != '\0') {
+        ;
+    }
+
+    return EXIT_OK;
 }
 
 static int ProgLoad(char *prog, struct bpf_object ** obj, int * bpfprogFd)
@@ -730,8 +790,55 @@ static int SetCfgsInfo(char *cfg, int cfgLen, char *args, int argsLen)
     return option->op.setCfg(cfg, args);
 }
 
+static int BreakMultiArgs(char *args, char arg1[], char arg2[], int mutilArgs)
+{
+    int ret;
+
+    ret = BreakArgs(args, arg1, arg2, ARG_LEN, ARG_LEN);
+    if (ret != EXIT_OK) {
+        (void)fprintf(stderr, "invalid arg length: break args failed\n");
+        return EXIT_FAIL_OPTION;
+    }
+
+    if (mutilArgs == EXIT_OK) {
+        if (arg1[0] == '\0' || arg2[0] != '\0') {
+            (void)fprintf(stderr, "invalid option: need 1 args\n");
+            return EXIT_FAIL_OPTION;
+        }
+    } else {
+        if (arg1[0] == '\0' || arg2[0] == '\0') {
+            (void)fprintf(stderr, "invalid option: need 2 args\n");
+            return EXIT_FAIL_OPTION;
+        }
+    }
+    return EXIT_OK;
+}
+
+
 static int ParseUnit(char arg[], int setPrio,  long long *val)
 {
+    int unit;
+    char *ptr = NULL;
+    long long tmp = strtol(arg, &ptr, DECIMAL);
+
+    if (ptr[0] != 0) {
+        unit = BwmOption(ptr);
+        if (unit <= 0) {
+            (void)fprintf(stderr, "invalid option: unit wrong\n");
+            return EXIT_FAIL_OPTION;
+        }
+        if (tmp > LLONG_MAX / unit || tmp < -1) {
+            (void)fprintf(stderr, "invalid arg: number too long\n");
+            return EXIT_FAIL_OPTION;
+        }
+        tmp *= (long long)unit;
+    } else if (setPrio == 0) {
+        (void)fprintf(stderr, "invalid option: need unit\n");
+        return EXIT_FAIL_OPTION;
+    }
+
+    *val = tmp;
+
     return EXIT_OK;
 }
 
@@ -739,6 +846,30 @@ static int ParseArgs(char *args, long long *val1, long long *val2, int mutilArgs
 {
     char arg1[ARG_LEN + 1];
     char arg2[ARG_LEN + 1];
+
+    if (BreakMultiArgs(args, arg1, arg2, mutilArgs) != EXIT_OK) {
+        return EXIT_FAIL_OPTION;
+    }
+
+    // param like 001 or -001 is invalid
+    if (arg1[0] == '-' && arg1[1] == '0') {
+        (void)fprintf(stderr, "invalid arg: number start with 0 is invalid\n");
+        return EXIT_FAIL_OPTION;
+    }
+    if ((arg1[0] == '0' && arg1[1] != 0) || (arg2[0] == '0' && arg2[1] != 0)) {
+        (void)fprintf(stderr, "invalid arg: number start with 0 is invalid\n");
+        return EXIT_FAIL_OPTION;
+    }
+
+    if (ParseUnit(arg1, setPrio, val1) != EXIT_OK) {
+        return EXIT_FAIL_OPTION;
+    }
+
+    if (mutilArgs != 0) {
+        if (ParseUnit(arg2, setPrio, val2) != EXIT_OK) {
+            return EXIT_FAIL_OPTION;
+        }
+    }
 
     return EXIT_OK;
 }
@@ -855,6 +986,224 @@ static int SetCgrpPrio(void *cgrpPath, void *args)
     }
 
     return CgrpV2PrioSet(cgrpPath, (int)prio);
+}
+
+static int ReadStats(struct edt_throttle *stats)
+{
+    int ret;
+    int mapIndex = 0;
+    int fd;
+
+    fd = bpf_obj_get(THROTTLE_MAP_PATH);
+    if (fd < 0) {
+        BWM_LOG_ERR("ERROR: ReadStats bpf_obj_get failed, Not enabled? %s fd:%d errno:%d\n",
+            THROTTLE_MAP_PATH, fd, errno);
+        return EXIT_FAIL_BPF;
+    }
+
+    ret = bpf_map_lookup_elem(fd, &mapIndex, stats);
+    if (ret != 0) {
+        BWM_LOG_ERR("ERROR: ReadStats can't find map. %s ret:%d errno:%d\n",
+            THROTTLE_MAP_PATH, ret, errno);
+        (void)close(fd);
+        return EXIT_FAIL_BPF;
+    }
+    (void)close(fd);
+    return EXIT_OK;
+}
+
+static int ReadCfg(struct edt_throttle_cfg *cfg)
+{
+    int ret;
+    int mapIndex = 0;
+    int fd;
+
+    fd = bpf_obj_get(THROTTLE_CFG_PATH);
+    if (fd < 0) {
+        BWM_LOG_ERR("ERROR: ReadCfg bpf_obj_get failed, Not enabled? %s fd:%d errno:%d\n",
+            THROTTLE_CFG_PATH, fd, errno);
+        return EXIT_FAIL_BPF;
+    }
+
+    ret = bpf_map_lookup_elem(fd, &mapIndex, cfg);
+    if (ret != 0) {
+        BWM_LOG_ERR("ERROR: ReadCfg can't find map. %s ret:%d errno:%d\n",
+            THROTTLE_CFG_PATH, ret, errno);
+        (void)close(fd);
+        return EXIT_FAIL_BPF;
+    }
+
+    (void)close(fd);
+    return EXIT_OK;
+}
+
+static int UpdateCfg(const struct edt_throttle_cfg *cfg)
+{
+    int ret;
+    int mapIndex = 0;
+    int fd;
+
+    fd = bpf_obj_get(THROTTLE_CFG_PATH);
+    if (fd < 0) {
+        BWM_LOG_ERR("ERROR: UpdateCfg bpf_obj_get failed, Not enabled? %s fd:%d errno:%d\n",
+            THROTTLE_CFG_PATH, fd, errno);
+        return EXIT_FAIL_BPF;
+    }
+
+    ret = bpf_map_update_elem(fd, &mapIndex, cfg, BPF_ANY);
+    if (ret != 0) {
+        BWM_LOG_ERR("ERROR: UpdateCfg update map fail. %s ret:%d errno:%d\n",
+            THROTTLE_CFG_PATH, ret, errno);
+        (void)close(fd);
+        return EXIT_FAIL_BPF;
+    }
+    (void)close(fd);
+    return EXIT_OK;
+}
+
+static bool InitCfgMap()
+{
+    struct edt_throttle_cfg cfg = {0};
+    int ret;
+
+    ret = ReadCfg(&cfg);
+    if (ret != EXIT_OK) {
+        BWM_LOG_ERR("InitCfgMap ReadCfg err: %d\n", ret);
+        return false;
+    }
+    if (cfg.interval == 0) {
+        cfg.water_line = DEFAULT_WATERLINE;
+        cfg.interval = 10ULL * NSEC_PER_MSEC; // actually 10ms
+        cfg.low_rate = DEFAULT_LOW_BANDWIDTH;
+        cfg.high_rate = DEFAULT_HIGH_BANDWIDTH;
+
+        ret = UpdateCfg(&cfg);
+        if (ret != EXIT_OK) {
+            BWM_LOG_ERR("InitCfgMap UpdateCfg err: %d\n", ret);
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static int GetBandwidth(void *unused)
+{
+    int ret;
+    struct edt_throttle_cfg cfg = {0};
+
+    ret = ReadCfg(&cfg);
+    if (ret != EXIT_OK) {
+        return ret;
+    }
+
+    BWM_LOG_INFO("bandwidth is %llu(B),%llu(B)\n", (cfg.low_rate == 0) ? DEFAULT_LOW_BANDWIDTH : cfg.low_rate,
+        (cfg.high_rate == 0) ? DEFAULT_HIGH_BANDWIDTH : cfg.high_rate);
+    return EXIT_OK;
+}
+static int SetBandwidth(void *cgrpPath, void *args)
+{
+    int ret;
+    long long low, high;
+    unsigned long long lowtemp, hightemp;
+    struct edt_throttle_cfg cfg = {0};
+
+    ret = ReadCfg(&cfg);
+    if (ret != EXIT_OK) {
+        return ret;
+    }
+
+    ret = ParseArgs(args, &low, &high, 1, 0);
+    if (ret != EXIT_OK) {
+        return ret;
+    }
+
+    if (low < LOWEST_BANDWIDTH || high > HIGHEST_BANDWIDTH || (low > high)) {
+        (void)fprintf(stderr, "invalid bandwidth: %lld,%lld, bandwidth should between %lld, %lld\n", low, high,
+            LOWEST_BANDWIDTH, HIGHEST_BANDWIDTH);
+        return EXIT_FAIL_OPTION;
+    }
+
+    lowtemp = (unsigned long long)low;
+    hightemp = (unsigned long long)high;
+    if (lowtemp != cfg.low_rate || hightemp != cfg.high_rate) {
+        cfg.low_rate = lowtemp;
+        cfg.high_rate = hightemp;
+
+        ret = UpdateCfg(&cfg);
+        if (ret != EXIT_OK) {
+            return ret;
+        }
+    }
+    BWM_LOG_INFO("set bandwidth success\n");
+    return EXIT_OK;
+}
+static int GetWaterline(void *unused)
+{
+    int ret;
+    struct edt_throttle_cfg cfg = {0};
+
+    ret = ReadCfg(&cfg);
+    if (ret != EXIT_OK) {
+        return ret;
+    }
+    unsigned long long wl = (cfg.water_line == 0) ? DEFAULT_WATERLINE : cfg.water_line;
+    BWM_LOG_INFO("waterline is %llu(B)\n", wl);
+    return EXIT_OK;
+}
+static int SetWaterline(void *cgrpPath, void *args)
+{
+    int ret;
+    long long val, tmp;
+    struct edt_throttle_cfg cfg = {0};
+
+    ret = ReadCfg(&cfg);
+    if (ret != EXIT_OK) {
+        return ret;
+    }
+
+    ret = ParseArgs(args, &val, &tmp, 0, 0);
+    if (ret != EXIT_OK) {
+        return ret;
+    }
+
+    if (val < DEFAULT_WATERLINE || val > HIGHEST_BANDWIDTH) {
+        (void)fprintf(stderr,
+            "invalid waterline: %lld, "
+            "waterline should between %lld, %lld\n",
+            val, DEFAULT_WATERLINE, HIGHEST_BANDWIDTH);
+        return EXIT_FAIL_OPTION;
+    }
+
+    if ((unsigned long long)val != cfg.water_line) {
+        cfg.water_line = (unsigned long long)val;
+        ret = UpdateCfg(&cfg);
+        if (ret != EXIT_OK) {
+            return ret;
+        }
+    }
+    BWM_LOG_INFO("set waterline success\n");
+    return EXIT_OK;
+}
+static int GetStats(void *unused)
+{
+    int ret;
+    struct edt_throttle stats = {0};
+
+    ret = ReadStats(&stats);
+    if (ret != EXIT_OK) {
+        return ret;
+    }
+
+    PrintThrottle(&stats);
+
+    return EXIT_OK;
+}
+
+static int GetDevs(void *unused)
+{
+    PrintDevsStats();
+    return EXIT_OK;
 }
 
 int main(int argc, char **argv)
