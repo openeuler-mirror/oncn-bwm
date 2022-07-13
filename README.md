@@ -7,7 +7,7 @@
 
 ### 支持设置Pod网络优先级
 1.  以执行bwmcli命令的方式设置某个cgroup的网络优先级，执行bwmcli命令时需要指定的参数包括：cgrp_path、prio
-2.  优先级默认值为0，0标识为在线业务，-1标识为离线业务，优先级的范围为[-999999, 999999]，范围外的其他值均为非法写入，不支持。
+2.  优先级默认值为0，0标识为在线业务，-1标识为离线业务。
 
 ###  支持设置离线业务网络带宽限制
 1.  Pod网络带宽限制对所有离线业务生效，所有离线业务的总带宽不能超过设置的网络带宽限制，在线业务没有网络带宽限制。
@@ -24,25 +24,24 @@
 2.  一个主机上的所有使能Qos功能的网卡在实现内部被当成一个整体看待，也就是共享设置的水线和网络带宽限制。
 
 ## 软件架构
-
+```
 oncn-bwm
 │  bwmcli.c # bwmcli命令行工具
 │  bwmcli.h
 │  CMakeLists.txt
 │  LICENSE
-│  README.en.md
 │  README.md
 │
 ├─bpf # 两个ebpf程序文件实现带宽管理逻辑
 │
 └─tools # 在离线带宽检测工具，基于bpftrace
-
+```
 
 ## 安装教程
 
 1.  cmake .
 2.  make
-3.  mkdir -p %{buildroot}/usr/share/bwmcli
+3.  mkdir -p /usr/share/bwmcli
 4.  install -Dpm 0500 bpf/CMakeFiles/bwm_prio_kern.dir/bwm_prio_kern.c.o /usr/share/bwmcli/bwm_prio_kern.o
 5.  install -Dpm 0500 bpf/CMakeFiles/bwm_tc.dir/bwm_tc.c.o /usr/share/bwmcli/bwm_tc.o
 6.  install -Dpm 0500 bwmcli /usr/bin
@@ -51,91 +50,110 @@ oncn-bwm
 ## 使用说明
 
 ### 接口说明
-接口1
-	bwmcli –e/-d ethx
-	bwmcli –e/-d
-功能描述	使能/除能某个网卡的Qos功能
-使能/除能所有网卡的Qos功能
-接口语法
-	bwmcli –e eth0 –e eth1
-	输出：
-		enable eth0 success
-		enable eth1 success
+**接口1**
 
-	bwmcli –d eth0 –d eth1
-	输出：
-		disable eth0 success
-		disable eth1 success
+说明
+```
+bwmcli –e/-d ethx 使能/除能某个网卡的Qos功能
+bwmcli –e/-d 使能/除能所有网卡的Qos功能
+```
+示例
+```
+# bwmcli –e eth0 –e eth1
+enable eth0 success
+enable eth1 success
 
-接口2	
-	bwmcli –s path <prio> 
-	bwmcli –p path
-功能描述	设置/查询某个cgroup的优先级
-接口语法
-	bwmcli -s /sys/fs/cgroup/net_cls/test_online 0
-	输出：
-		set prio success
+# bwmcli –d eth0 –d eth1
+disable eth0 success
+disable eth1 success
+```
 
-	bwmcli -p /sys/fs/cgroup/net_cls/test_online
-	输出：
-		prio is 0
+**接口2**
 
-接口3	
-	bwmcli –s bandwidth <low,high>
-	bwmcli –p bandwidth
-功能描述	设置/查询离线带宽
-接口语法	
-	bwmcli -s bandwidth 30mb,100mb
-	bwmcli -s bandwidth 30mb,1gb
-	输出：
-		set bandwidth success
+说明
+```
+bwmcli –s path <prio> 设置某个cgroup的优先级
+bwmcli –p path 查询某个cgroup的优先级
+```
+示例
+```
+# bwmcli -s /sys/fs/cgroup/net_cls/test_online 0
+set prio success
 
-	bwmcli -p bandwidth
-	输出：
-		bandwidth is 31457280(B),104857600(B)
+# bwmcli -p /sys/fs/cgroup/net_cls/test_online
+prio is 0
+```
 
-接口4	
-	bwmcli –s waterline <val>
-	bwmcli –p waterline
-功能描述	设置/查询在线水线
-接口语法	
-	bwmcli -s waterline 20mb
-	输出：
-		set waterline success
+**接口3**	
 
-	bwmcli -p waterline
-	输出：
-		waterline is 20971520 (B)
+说明
+```
+bwmcli –s bandwidth <low,high> 设置离线带宽
+bwmcli –p bandwidth 查询离线带宽
+```
+示例
+```
+# bwmcli -s bandwidth 30mb,100mb
+set bandwidth success
 
-接口5	
-	bwmcli –p stats
-功能描述	打印内部统计信息
-接口语法	
-	bwmcli -p stats
-	输出：
-		rate: 1073741824
-		online_pkts: 79752
-		offline_pkts: 69730
-		online rate past: 0
-		offline rate past: 916194823
+# bwmcli -p bandwidth
+bandwidth is 31457280(B),104857600(B)
+```
 
-接口6	
-	bwmcli –p devs
-功能描述	描述系统上所有网卡的使能状态
-接口语法	
-	bwmcli –p devs
-	输出：
-		lo              : disabled
-		enp2s2          : disabled
+**接口4**	
+
+说明
+```
+bwmcli –s waterline <val> 设置在线水线
+bwmcli –p waterline 查询在线水线
+```
+示例	
+```
+# bwmcli -s waterline 20mb
+set waterline success
+
+# bwmcli -p waterline
+waterline is 20971520 (B)
+```
+
+**接口5**	
+
+说明
+```
+bwmcli –p stats 打印内部统计信息
+```
+示例
+```
+# bwmcli -p stats
+rate: 1073741824
+online_pkts: 79752
+offline_pkts: 69730
+online rate past: 0
+offline rate past: 916194823
+```
+
+**接口6**	
+
+说明
+```
+bwmcli –p devs 描述系统上所有网卡的使能状态
+```
+示例	
+```
+# bwmcli –p devs
+lo              : disabled
+enp2s2          : disabled
+```
 
 ### 典型使用案例
-
-1. bwmcli -p devs 查询系统当前网卡使能状态
-2. bwmcli -s /sys/fs/cgroup/net_cls/online 0
-3. bwmcli -s /sys/fs/cgroup/net_cls/offline -1
-4. bwmcli -e eth0 使能eth0的网卡 Qos功能
-5. bwmcli -s bandwidth 20mb,1gb 配置离线业务带宽
-6. bwmcli -s waterline 30mb 配置在线业务的水线
+```
+bwmcli -p devs 查询系统当前网卡使能状态
+bwmcli -s /sys/fs/cgroup/net_cls/online 0
+bwmcli -s /sys/fs/cgroup/net_cls/offline -1
+bwmcli -e eth0 使能eth0的网卡 Qos功能
+bwmcli -s bandwidth 20mb,1gb 配置离线业务带宽
+bwmcli -s waterline 30mb 配置在线业务的水线
+```
 
 ## 参与贡献
 
