@@ -1,0 +1,134 @@
+#!/usr/bin/env bpftrace
+
+#include <linux/skbuff.h>
+#include <linux/netdevice.h>
+
+BEGIN
+{
+	@start = nsecs;
+	@start_monitor = nsecs;
+	@rate_online = (uint64)0;
+	@rate_offline = (uint64)0;
+	@online_bytes = (uint64)0;
+	@offline_bytes = (uint64)0;
+	@avg_cnt = (uint64)0;
+
+	/* if qos is enabled on a virtual net device, then
+	 * @net_dev should be set. but we suggest that only
+	 * enabling physical network card to use this tool.
+	 */
+	//@net_dev = "virbr0";
+	@net_dev = "";
+
+	/* adjustable parameters */
+	@sample_interval = (uint64)10;
+	@monitor_interval = (uint64)25;
+	// The offline bandwidth is lower than high_threshold, indicating that the limit is successful.
+	// Default value is 5% error from the bandwidth_low
+	@high_threshold = (uint64)21971520; // 20mB * 1.05
+	@bandwidth_low = (uint64)20971520; // 20mB
+	@bandwidth_high = (uint64)1073741824; // 1GB
+	if ($1 > 0) {
+		@bandwidth_low = (uint64)($1);
+		@high_threshold = (uint64)(@bandwidth_low + @bandwidth_low/20);
+	}
+	if ($2 > 0) {
+		@bandwidth_high = (uint64)($2);
+	}
+	if ($3 > 10) { // 10ms is the minimum sampling interval
+		@sample_interval = (uint64)($3);
+	}
+	if ($4 > 0) {
+		if ($4 < @sample_interval) {
+			@monitor_interval = @sample_interval;
+		} else {
+			@monitor_interval = (uint64)($4);
+		}
+	}
+}
+
+tracepoint:net:net_dev_start_xmit
+{
+	$skb = ((struct sk_buff *)args->skbaddr);
+
+	if (@net_dev != "" && strncmp($skb->dev->name, @net_dev, 16) != 0) {
+		/* For the virtual network card, in order to make accurate
+		 * statistics, we only count the traffic on the virtual
+		 * network card
+		 */
+
+		/* at bpftrace higher version, we can use "return" to
+		 * Optimization branch. Now, we do nothing here.
+		 */
+
+	}
+	else {
+
+		$interval = (nsecs - @start)/1000000;
+
+		if ($interval >= @sample_interval) {
+			@rate_online = @online_bytes*(1000/$interval);
+			@rate_offline = @offline_bytes*(1000/$interval);
+
+			@avg_online = @avg_online + @rate_online;
+			@avg_offline = @avg_offline + @rate_offline;
+
+			@avg_cnt = @avg_cnt + 1;
+
+			/* reinit counters */
+			@online_bytes = 0;
+			@offline_bytes = 0;
+			@start = nsecs;
+		}
+
+		$interval = (nsecs - @start_monitor)/1000000;
+
+		if ($interval >= @monitor_interval) {
+			/* offline bandwidth has reached the specific threshold */
+			if (@avg_offline/@avg_cnt >= @bandwidth_low &&
+				@avg_offline/@avg_cnt <= @bandwidth_high)
+			{
+				printf("[offline_exists]");
+			}
+			if ((@high_threshold != 0 &&
+				@avg_offline/@avg_cnt <= @high_threshold))
+			{
+				printf("[limiting]");
+			}
+
+			printf("online/offline{%d}(ms): %u/%u(Bytes)\n",
+				$interval,
+				@avg_online/@avg_cnt,
+				@avg_offline/@avg_cnt);
+			@avg_online = 0;
+			@avg_offline = 0;
+			@start_monitor = nsecs;
+			@avg_cnt = 0;
+		}
+		
+		if ($skb->priority != 4294967295) { // 4294967295 is -1;
+			@online_bytes = @online_bytes + $skb->len;
+		} else {
+			@offline_bytes = @offline_bytes + $skb->len;
+		}
+	}
+}
+
+END
+{
+	clear(@start);
+	clear(@start_monitor);
+	clear(@sample_interval);
+	clear(@monitor_interval);
+	clear(@online_bytes);
+	clear(@offline_bytes);
+	clear(@avg_online);
+	clear(@avg_offline);
+	clear(@rate_online);
+	clear(@rate_offline);
+	clear(@avg_cnt);
+	clear(@net_dev);
+	clear(@high_threshold);
+	clear(@bandwidth_low);
+	clear(@bandwidth_high);
+}

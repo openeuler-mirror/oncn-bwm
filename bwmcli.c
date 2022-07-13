@@ -440,10 +440,23 @@ static int CgrpV2PrioGet(const char *cgrpPath)
     }
 
     ret = bpf_prog_query(cgFd, BPF_CGROUP_INET_EGRESS, 0, NULL, progIds, &progCnt);
+    if (ret != 0) {
+        BWM_LOG_ERR("Failed to query bpf programs on cgroup: %s. errno:%d\n", cgrpPath, errno);
+        ret = EXIT_FAIL_BPF;
+        goto end;
+    }
 
     ret = EXIT_FAIL_BPF;
+    if (progCnt != 1) {
+        BWM_LOG_ERR("Error: %u progs attach to this cgroup\n", progCnt);
+        goto end;
+    }
 
     mapFd = GetMapFdByProgId(progIds[0]);
+    if (mapFd < 0) {
+        BWM_LOG_ERR("can not find map in prog\n");
+        goto end;
+    }
 
     if (bpf_map_lookup_elem(mapFd, &key, &prio) != EXIT_OK) {
         BWM_LOG_ERR("can not find prio. errno:%d\n", errno);
@@ -745,6 +758,14 @@ static int EnableAllNetdevice(void)
     return ret;
 }
 
+static void PrintThrottle(const struct edt_throttle *throttle)
+{
+    BWM_LOG_INFO("offline_target_bandwidth: %llu\n", throttle->rate);
+    BWM_LOG_INFO("online_pkts: %llu\n", throttle->stats.online_pkts);
+    BWM_LOG_INFO("offline_pkts: %llu\n", throttle->stats.offline_pkts);
+    BWM_LOG_INFO("online_rate: %llu\n", throttle->stats.rate_past);
+    BWM_LOG_INFO("offline_rate: %llu\n", throttle->stats.offline_rate_past);
+}
 
 static int DevStatShow(const char *ethdev, const void *arg)
 {
@@ -881,6 +902,10 @@ static int CfgsInfo(int argc, char **argv, int isSet)
     char args[PRIO_LEN] = {0};
 
     (void)strncpy(option, optarg, PATH_MAX);
+    if (option[PATH_MAX] != '\0') {
+        (void)fprintf(stderr, "invalid option, too long: %s\n", optarg);
+        return EXIT_FAIL_OPTION;
+    }
 
     if (optind >= argc || isSet == EXIT_OK) {
         if (isSet != EXIT_OK) {
@@ -892,6 +917,11 @@ static int CfgsInfo(int argc, char **argv, int isSet)
     }
 
     (void)strncpy(args, argv[optind], PRIO_LEN - 1);
+    if (args[PRIO_LEN - 1] != '\0') {
+        (void)fprintf(stderr, "invalid args, too long: %s\n", argv[optind]);
+        return EXIT_FAIL_OPTION;
+    }
+
     ret = SetCfgsInfo(option, PATH_MAX + 1, args, PRIO_LEN);
     if (ret != EXIT_OK) {
         return ret;
