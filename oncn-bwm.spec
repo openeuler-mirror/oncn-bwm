@@ -1,6 +1,6 @@
 Name:       oncn-bwm
 Version:    1.0
-Release:    1
+Release:    2
 Summary:    Pod bandwidth management in mixed deployment scenarios of online and offline services
 License:    GPL-2.0
 URL:        https://gitee.com/src-openeuler/oncn-bwm
@@ -78,6 +78,7 @@ fi
 %files
 %defattr(-,root,root)
 %attr(0500,root,root) %{_bindir}/bwmcli
+%attr(0500,root,root) /usr/share/bwmcli
 %attr(0500,root,root) /usr/share/bwmcli/bwm_prio_kern.o
 %attr(0500,root,root) /usr/share/bwmcli/bwm_tc.o
 
@@ -86,5 +87,8 @@ fi
 
 
 %changelog
+* Wed Jul 20 2022 wo_cow <niuiqianqian@huawei.com> - 1.0-2
+- add permission to dir
+
 * Thu Jul 14 2022 wo_cow <niuiqianqian@huawei.com> - 1.0-1
 - init oncn-bwm
