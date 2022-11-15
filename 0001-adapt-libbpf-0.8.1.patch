@@ -1,0 +1,144 @@
+From 0460a04fd537dffc527788613b03202191e10e8d Mon Sep 17 00:00:00 2001
+From: JofDiamonds <kwb0523@163.com>
+Date: Tue, 15 Nov 2022 11:32:42 +0800
+Subject: [PATCH] adapt libbpf-0.8.1
+
+---
+ bpf/bwm_prio_kern.c | 14 ++++++-------
+ bwmcli.c            | 50 ++++++++++++++++++++++++++++++---------------
+ 2 files changed, 40 insertions(+), 24 deletions(-)
+
+diff --git a/bpf/bwm_prio_kern.c b/bpf/bwm_prio_kern.c
+index 1c59322..68127f9 100644
+--- a/bpf/bwm_prio_kern.c
++++ b/bpf/bwm_prio_kern.c
+@@ -20,13 +20,13 @@
+ 
+ #define DEFAULT_CGP_PRIO 0
+ 
+-struct bpf_map_def cgrp_prio SEC("maps")  = {
+-	.type = BPF_MAP_TYPE_ARRAY,
+-	.key_size = sizeof(unsigned int),
+-	.value_size = sizeof(unsigned int),
+-	.max_entries = 1,
+-	.map_flags = 0,
+-};
++struct {
++	__uint(type, BPF_MAP_TYPE_ARRAY);
++	__type(key, unsigned int);
++	__type(value, unsigned int);
++	__uint(max_entries, 1);
++	__uint(map_flags, 0);
++} cgrp_prio SEC(".maps");
+ 
+ SEC("cgroup_skb/egress")
+ int _bwm_out_cg(struct __sk_buff *skb)
+diff --git a/bwmcli.c b/bwmcli.c
+index f087ea6..75fbfab 100644
+--- a/bwmcli.c
++++ b/bwmcli.c
+@@ -212,40 +212,59 @@ static int BreakArgs(char *s, char *arg1, char *arg2, unsigned long arg1Len, uns
+     return EXIT_OK;
+ }
+ 
+-static int ProgLoad(char *prog, struct bpf_object ** obj, int * bpfprogFd)
++static int ProgLoad(char *prog, int * bpfprogFd)
+ {
+-    struct bpf_prog_load_attr progLoadAttr = {
+-        .prog_type = BPF_PROG_TYPE_CGROUP_SKB,
+-        .file = prog,
+-        .expected_attach_type = BPF_CGROUP_INET_EGRESS,
+-        .ifindex = 0,
+-        .log_level = 0,
+-    };
+     int mapFd;
+     struct bpf_map *map = NULL;
++    struct bpf_object *obj = NULL;
++    struct bpf_program *program = NULL;
+ 
+     if (access(prog, O_RDONLY) < 0) {
+         BWM_LOG_ERR("Error accessing file %s\n", prog);
+         return -1;
+     }
+-    if (bpf_prog_load_xattr(&progLoadAttr, &(*obj), bpfprogFd)) {
+-        BWM_LOG_ERR("ERROR: bpf_prog_load_xattr failed for: %s. errno:%d\n", prog, errno);
++
++    obj = bpf_object__open(prog);
++    if (libbpf_get_error(obj)) {
++        BWM_LOG_ERR("ERROR: bpf_object__open failed for: %s. errno:%d\n", prog, errno);
+         return -1;
+     }
+ 
+-    map = bpf_object__find_map_by_name(*obj, "cgrp_prio");
++    program = bpf_object__next_program(obj, NULL);
++    if (!program) {
++        BWM_LOG_ERR("ERROR: bpf_object__next_program failed for: %s. errno:%d\n", prog, errno);
++        goto err;
++    }
++
++    bpf_program__set_type(program, BPF_PROG_TYPE_CGROUP_SKB);
++
++    if (bpf_object__load(obj)) {
++        BWM_LOG_ERR("ERROR: bpf_object__load failed for: %s. errno:%d\n", prog, errno);
++        goto err;
++    }
++
++    *bpfprogFd = bpf_program__fd(program);
++    if (*bpfprogFd < 0) {
++        BWM_LOG_ERR("Failed to get program fd. errno:%d\n", errno);
++        goto err;
++    }
++
++    map = bpf_object__find_map_by_name(obj, "cgrp_prio");
+     if (!map) {
+         BWM_LOG_ERR("Failed to load map cgrp_prio from bpf prog. errno:%d\n", errno);
+-        return -1;
++        goto err;
+     }
+ 
+     mapFd = bpf_map__fd(map);
+     if (mapFd < 0) {
+         BWM_LOG_ERR("Map not found: %d. errno:%d\n", mapFd, errno);
+-        return -1;
++        goto err;
+     }
+ 
+     return mapFd;
++err:
++    bpf_object__close(obj);
++    return -1;
+ }
+ 
+ static int GetMapFdByProgId(__u32 progId)
+@@ -377,7 +396,6 @@ static int CgrpV2PrioSet(const char *cgrpPath, int prio)
+     int key = 0;
+     int cgFd;
+     int mapFd;
+-    struct bpf_object *obj = NULL;
+     int bpfprogFd;
+ 
+     cgFd = open(cgrpPath, O_RDONLY);
+@@ -392,7 +410,7 @@ static int CgrpV2PrioSet(const char *cgrpPath, int prio)
+         return EXIT_FAIL;
+     }
+ 
+-    mapFd = ProgLoad(CGRP_PRIO_PROG, &obj, &bpfprogFd);
++    mapFd = ProgLoad(CGRP_PRIO_PROG, &bpfprogFd);
+     if (mapFd == -1) {
+         goto err;
+     }
+@@ -416,11 +434,9 @@ static int CgrpV2PrioSet(const char *cgrpPath, int prio)
+ 
+     BWM_LOG_INFO("set prio success\n");
+     (void)close(cgFd);
+-    bpf_object__close(obj);
+     return EXIT_OK;
+ err:
+     (void)close(cgFd);
+-    bpf_object__close(obj);
+     return EXIT_FAIL_BPF;
+ }
+ 
+-- 
+2.33.0
+
