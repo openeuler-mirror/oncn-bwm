@@ -1,6 +1,6 @@
 Name:       oncn-bwm
 Version:    1.0
-Release:    2
+Release:    3
 Summary:    Pod bandwidth management in mixed deployment scenarios of online and offline services
 License:    GPL-2.0
 URL:        https://gitee.com/src-openeuler/oncn-bwm
@@ -9,6 +9,8 @@ Source:     %{name}-%{version}.tar.gz
 BuildRequires: libbpf-devel cmake gcc clang 
 Requires: iproute libbpf
 Requires(preun): bpftool
+
+Patch9001:    0001-adapt-libbpf-0.8.1.patch
 
 %description
 Pod bandwidth management in mixed deployment scenarios of online and offline services
@@ -87,6 +89,9 @@ fi
 
 
 %changelog
+* Tue Nov 15 2022 JofDiamonds <kwb0523@163.com> - 1.0-3
+- adapt libbpf-0.8.1
+
 * Wed Jul 20 2022 wo_cow <niuiqianqian@huawei.com> - 1.0-2
 - add permission to dir
 
