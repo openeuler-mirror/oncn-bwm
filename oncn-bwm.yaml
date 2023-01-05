@@ -1,2 +1,4 @@
 version_control: gitee
 src_repo: openEuler/oncn-bwm
+tag_prefix: "^oncn-bwm-"
+seperator: "."
