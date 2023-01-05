@@ -1,6 +1,6 @@
 Name:       oncn-bwm
 Version:    1.0
-Release:    4
+Release:    5
 Summary:    Pod bandwidth management in mixed deployment scenarios of online and offline services
 License:    GPL-2.0
 URL:        https://gitee.com/src-openeuler/oncn-bwm
@@ -89,6 +89,9 @@ fi
 
 
 %changelog
+* Thu Jan 5 2023 JofDiamonds <kwb0523@163.com> - 1.0-5
+- update oncn-bwm.yaml
+
 * Mon Dec 26 2022 JofDiamonds <kwb0523@163.com> - 1.0-4
 - add oncn-bwm.yaml
 
