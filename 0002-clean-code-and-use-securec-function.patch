@@ -1,0 +1,202 @@
+From ce6a3a3afb89842d29c4c7e8a18dfbc1e46f4e55 Mon Sep 17 00:00:00 2001
+From: JofDiamonds <kwb0523@163.com>
+Date: Wed, 15 Feb 2023 16:29:48 +0800
+Subject: [PATCH] clean code and use securec function
+
+---
+ CMakeLists.txt |  2 +-
+ bpf/bwm_tc.c   |  5 ++---
+ bwmcli.c       | 42 ++++++++++++++++++++++--------------------
+ 3 files changed, 25 insertions(+), 24 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 70b47e7..c711a1c 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -14,4 +14,4 @@ if($ENV{HS_COVERAGE_ENABLE})
+ endif($ENV{HS_COVERAGE_ENABLE})
+ 
+ add_executable(bwmcli bwmcli.c)
+-target_link_libraries(bwmcli -l:libbpf.so)
++target_link_libraries(bwmcli -l:libbpf.so -l:libboundscheck.so)
+diff --git a/bpf/bwm_tc.c b/bpf/bwm_tc.c
+index 3585c6d..286783a 100644
+--- a/bpf/bwm_tc.c
++++ b/bpf/bwm_tc.c
+@@ -53,8 +53,7 @@ struct bpf_elf_map_t SEC("maps") throttle_map = {
+ 	.id = 0,
+ };
+ 
+-static void throttle_init(const struct edt_throttle_cfg *cfg,
+-			      struct edt_throttle *throttle)
++static void throttle_init(const struct edt_throttle_cfg *cfg, struct edt_throttle *throttle)
+ {
+ 	throttle->t_last = 0;
+ 	throttle->rate = cfg->low_rate;
+@@ -154,7 +153,7 @@ int bwm_tc(struct __sk_buff *skb)
+ 	if (throttle->rate == 0)
+ 		throttle_init(cfg_con, throttle);
+ 
+-	priority_index = bpf_skb_cgroup_classid(skb);
++	priority_index = (unsigned int)bpf_skb_cgroup_classid(skb);
+ 	skb->priority += priority_index;
+ 
+ 	const struct __sk_buff *skb_con = skb;
+diff --git a/bwmcli.c b/bwmcli.c
+index 75fbfab..b56a8b9 100644
+--- a/bwmcli.c
++++ b/bwmcli.c
+@@ -20,6 +20,7 @@
+ #include <linux/bpf.h>
+ 
+ #include "bwm_tc.h"
++#include "securec.h"
+ #include "bwmcli.h"
+ 
+ #include <bpf/bpf.h>
+@@ -159,14 +160,14 @@ static int BwmOption(const char *str)
+     return -1;
+ }
+ 
+-static void Usage(char *argv[])
++static void Usage(char *const argv[])
+ {
+     int i;
+ 
+     BWM_LOG_INFO("Usage: %s <option(s)>\n", argv[0]);
+     BWM_LOG_INFO(" Options are:\n");
+     for (i = 0; g_helps[i].name != NULL; i++) {
+-        BWM_LOG_INFO(" -%c --%-18s", g_longOptions[i].val, g_longOptions[i].name);
++        BWM_LOG_INFO(" -%c --%-18s", (char)(g_longOptions[i].val), g_longOptions[i].name);
+         if (strlen(g_longOptions[i].name) > 25) { // 25 means line length
+             BWM_LOG_INFO("\n\t\t\t%s\n", g_helps[i].name);
+         } else {
+@@ -316,7 +317,7 @@ static bool CheckCgrpV1PathLegal(const char *cgrpPath, char *trustedPath)
+         return false;
+     }
+ 
+-    int ret = snprintf(trustedPath, PATH_MAX + 1, "%s/%s", trustedCgrpPath, "net_cls.classid");
++    int ret = snprintf_s(trustedPath, PATH_MAX + 1, PATH_MAX + 1, "%s/%s", trustedCgrpPath, "net_cls.classid");
+     if (ret < 0 || stat(trustedPath, &st) < 0 || (st.st_mode & S_IFMT) != S_IFREG) {
+         BWM_LOG_ERR("CgrpV1Prio get realPath failed. ret: %d\n", ret);
+         return false;
+@@ -349,9 +350,9 @@ static int CgrpV1Prio(const char *cgrpPath, int prio, int op)
+ 
+     switch (op) {
+         case PRIO_SET:
+-            ret = snprintf(buf, BUF_SIZE, "%u\n", (__u32)prio);
++            ret = snprintf_s(buf, BUF_SIZE, BUF_SIZE, "%u\n", (__u32)prio);
+             if (ret < 0) {
+-                BWM_LOG_ERR("CgrpV1Prio snprintf prio failed. ret: %d.\n", ret);
++                BWM_LOG_ERR("CgrpV1Prio snprintf_s prio failed. ret: %d.\n", ret);
+                 (void)close(fd);
+                 return -1;
+             }
+@@ -499,7 +500,7 @@ end:
+ static int NetdevEnabledSub(const char *format, const char *ethdev)
+ {
+     int ret;
+-    ret = snprintf(g_cmdBuf, MAX_CMD_LEN, format, ethdev);
++    ret = snprintf_s(g_cmdBuf, MAX_CMD_LEN, MAX_CMD_LEN, format, ethdev);
+     if (ret < 0) {
+         return 0;
+     }
+@@ -545,7 +546,7 @@ static int DisableSpecificNetdevice(const char *ethdev, const void *unused)
+     }
+ 
+     for (i = 0; i < sizeof(g_disableSeq) / sizeof(struct TcCmd); i++) {
+-        ret = snprintf(g_cmdBuf, MAX_CMD_LEN, g_disableSeq[i].cmdStr, ethdev);
++        ret = snprintf_s(g_cmdBuf, MAX_CMD_LEN, MAX_CMD_LEN, g_disableSeq[i].cmdStr, ethdev);
+         if (ret < 0 || g_cmdBuf[MAX_CMD_LEN - 1] != '\0') {
+             BWM_LOG_ERR("Invalid net device: %s\n", ethdev);
+             return EXIT_FAIL_OPTION;
+@@ -572,7 +573,7 @@ static bool execute_cmd(const char *format, const char *ethdev, const char *sear
+ {
+     int ret;
+ 
+-    ret = snprintf(g_cmdBuf, MAX_CMD_LEN, format, ethdev, search);
++    ret = snprintf_s(g_cmdBuf, MAX_CMD_LEN, MAX_CMD_LEN, format, ethdev, search);
+     if (ret < 0 || g_cmdBuf[MAX_CMD_LEN - 1] != '\0') {
+         g_cmdBuf[MAX_CMD_LEN - 1] = '\0';
+         BWM_LOG_ERR("Invalid cmd: %s\n", g_cmdBuf);
+@@ -650,7 +651,7 @@ static int EnableSpecificNetdevice(const char *ethdev, const void *unused)
+     }
+ 
+     for (i = 0; i < sizeof(g_enableSeq) / sizeof(struct TcCmd); i++) {
+-        ret = snprintf(g_cmdBuf, MAX_CMD_LEN, g_enableSeq[i].cmdStr, ethdev);
++        ret = snprintf_s(g_cmdBuf, MAX_CMD_LEN, MAX_CMD_LEN, g_enableSeq[i].cmdStr, ethdev);
+         if (ret < 0 || g_cmdBuf[MAX_CMD_LEN - 1] != '\0') {
+             BWM_LOG_ERR("Invalid net device: %s\n", ethdev);
+             return EXIT_FAIL_OPTION;
+@@ -684,8 +685,7 @@ clear:
+ // return: true is legal, false is illegal
+ static bool CheckDevNameIsLegalChar(const char c)
+ {
+-    if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '-'
+-        || c == '_') {
++    if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '-' || c == '_') {
+         return true;
+     }
+     return false;
+@@ -911,14 +911,15 @@ static int ParseArgs(char *args, long long *val1, long long *val2, int mutilArgs
+     return EXIT_OK;
+ }
+ 
+-static int CfgsInfo(int argc, char **argv, int isSet)
++static int CfgsInfo(int argc, char *const *argv, int isSet)
+ {
+     int ret;
++    errno_t rc;
+     char option[PATH_MAX + 1] = {0};
+     char args[PRIO_LEN] = {0};
+ 
+-    (void)strncpy(option, optarg, PATH_MAX);
+-    if (option[PATH_MAX] != '\0') {
++    rc = strncpy_s(option, PATH_MAX + 1, optarg, PATH_MAX + 1);
++    if (rc != EOK || option[PATH_MAX] != '\0') {
+         (void)fprintf(stderr, "invalid option, too long: %s\n", optarg);
+         return EXIT_FAIL_OPTION;
+     }
+@@ -932,8 +933,8 @@ static int CfgsInfo(int argc, char **argv, int isSet)
+         return ret;
+     }
+ 
+-    (void)strncpy(args, argv[optind], PRIO_LEN - 1);
+-    if (args[PRIO_LEN - 1] != '\0') {
++    rc = strncpy_s(args, PRIO_LEN, argv[optind], strlen(argv[optind]));
++    if (rc != EOK || args[PRIO_LEN - 1] != '\0') {
+         (void)fprintf(stderr, "invalid args, too long: %s\n", argv[optind]);
+         return EXIT_FAIL_OPTION;
+     }
+@@ -959,9 +960,10 @@ inline static int IsValidEthdev(const char *dev)
+     return ForeachEthdev(NetdevCmp, dev);
+ }
+ 
+-static int ChangeNetdeviceStatus(int argc, char **argv, int enable)
++static int ChangeNetdeviceStatus(int argc, char *const *argv, int enable)
+ {
+     int ret;
++    errno_t rc;
+     char ethdev[NAME_MAX + 1] = {0};
+ 
+     if (optarg == NULL && (optind >= argc || argv[optind][0] == '-')) {
+@@ -971,13 +973,13 @@ static int ChangeNetdeviceStatus(int argc, char **argv, int enable)
+     }
+ 
+     if (optarg != NULL) {
+-        (void)strncpy(ethdev, optarg, NAME_MAX);
++        rc = strncpy_s(ethdev, NAME_MAX + 1, optarg, NAME_MAX + 1);
+     } else {
+-        (void)strncpy(ethdev, argv[optind], NAME_MAX);
++        rc = strncpy_s(ethdev, NAME_MAX + 1, argv[optind], NAME_MAX + 1);
+         optind++;
+     }
+ 
+-    if (ethdev[NAME_MAX] != '\0') {
++    if (rc != EOK || ethdev[NAME_MAX] != '\0') {
+         (void)fprintf(stderr, "invalid dev name: %s\n", optarg);
+         return EXIT_FAIL_OPTION;
+     }
+-- 
+2.33.0
+
