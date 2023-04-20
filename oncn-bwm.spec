@@ -1,6 +1,6 @@
 Name:       oncn-bwm
 Version:    1.1
-Release:    1
+Release:    2
 Summary:    Pod bandwidth management in mixed deployment scenarios of online and offline services
 License:    GPL-2.0
 URL:        https://gitee.com/src-openeuler/oncn-bwm
@@ -8,6 +8,7 @@ Source:     %{name}-%{version}.tar.gz
 
 BuildRequires: libbpf-devel cmake gcc clang
 BuildRequires: libboundscheck
+BuildRequires: uname-build-checks kernel-devel kernel-source
 
 Requires: iproute libbpf
 Requires(preun): bpftool
@@ -15,6 +16,7 @@ Requires: libboundscheck
 
 Patch9001:    0001-adapt-libbpf-0.8.1.patch
 Patch9002:    0002-clean-code-and-use-securec-function.patch
+Patch9003:    0003-add-proc-file-interface.patch
 
 %description
 Pod bandwidth management in mixed deployment scenarios of online and offline services
@@ -33,6 +35,8 @@ devel tools for oncn-bwm
 mkdir build && cd build &&
 cmake ..
 make
+cd ../ko
+make
 
 %install
 mkdir -p %{buildroot}/%{_bindir}/%{name}
@@ -41,6 +45,12 @@ install -Dpm 0500 %{_builddir}/%{name}-%{version}/build/bpf/CMakeFiles/bwm_prio_
 install -Dpm 0500 %{_builddir}/%{name}-%{version}/build/bpf/CMakeFiles/bwm_tc.dir/bwm_tc.c.o     %{buildroot}/usr/share/bwmcli/bwm_tc.o
 install -Dpm 0500 %{_builddir}/%{name}-%{version}/build/bwmcli              %{buildroot}/%{_bindir}
 install -Dpm 0500 %{_builddir}/%{name}-%{version}/tools/bwm_monitor.bt      %{buildroot}/%{_bindir}
+mkdir -p %{buildroot}/lib/modules/bwm
+install %{_builddir}/%{name}-%{version}/ko/bwm.ko %{buildroot}/lib/modules/bwm
+
+%post
+ln -sf /lib/modules/bwm/bwm.ko /lib/modules/`uname -r`
+depmod -a
 
 %preun
 
@@ -81,18 +91,29 @@ if [ $1 -eq 0 ]; then
     DisableAllDevices
 fi
 
+%postun
+if [ "$1" -ne "1" ]; then
+    rm -rf /lib/modules/`uname -r`/bwm.ko
+fi
+depmod -a
+
 %files
 %defattr(-,root,root)
 %attr(0500,root,root) %{_bindir}/bwmcli
 %attr(0500,root,root) /usr/share/bwmcli
 %attr(0500,root,root) /usr/share/bwmcli/bwm_prio_kern.o
 %attr(0500,root,root) /usr/share/bwmcli/bwm_tc.o
+%attr(0550,root,root) %dir /lib/modules/bwm
+%attr(0440,root,root) /lib/modules/bwm/bwm.ko
 
 %files -n oncn-bwm-devel
 %attr(0500,root,root) %{_bindir}/bwm_monitor.bt
 
 
 %changelog
+* Mon Apr 17 2023 JofDiamonds <kwb0523@163.com> - 1.1-2
+- add proc file interface
+
 * Wed Feb 15 2023 JofDiamonds <kwb0523@163.com> - 1.1-1
 - clean code and use securec function
 
