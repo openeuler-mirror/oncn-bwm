@@ -1,12 +1,12 @@
-From 0460a04fd537dffc527788613b03202191e10e8d Mon Sep 17 00:00:00 2001
+From 555072cbb13cb6cb45abb862f2b1a268c0fba660 Mon Sep 17 00:00:00 2001
 From: JofDiamonds <kwb0523@163.com>
-Date: Tue, 15 Nov 2022 11:32:42 +0800
+Date: Mon, 17 Apr 2023 19:23:55 +0800
 Subject: [PATCH] adapt libbpf-0.8.1
 
 ---
  bpf/bwm_prio_kern.c | 14 ++++++-------
- bwmcli.c            | 50 ++++++++++++++++++++++++++++++---------------
- 2 files changed, 40 insertions(+), 24 deletions(-)
+ bwmcli.c            | 51 ++++++++++++++++++++++++++++++---------------
+ 2 files changed, 41 insertions(+), 24 deletions(-)
 
 diff --git a/bpf/bwm_prio_kern.c b/bpf/bwm_prio_kern.c
 index 1c59322..68127f9 100644
@@ -34,10 +34,10 @@ index 1c59322..68127f9 100644
  SEC("cgroup_skb/egress")
  int _bwm_out_cg(struct __sk_buff *skb)
 diff --git a/bwmcli.c b/bwmcli.c
-index f087ea6..75fbfab 100644
+index f087ea6..d9b59ad 100644
 --- a/bwmcli.c
 +++ b/bwmcli.c
-@@ -212,40 +212,59 @@ static int BreakArgs(char *s, char *arg1, char *arg2, unsigned long arg1Len, uns
+@@ -212,40 +212,60 @@ static int BreakArgs(char *s, char *arg1, char *arg2, unsigned long arg1Len, uns
      return EXIT_OK;
  }
  
@@ -103,6 +103,7 @@ index f087ea6..75fbfab 100644
 +        goto err;
      }
  
++    bpf_object__close(obj);
      return mapFd;
 +err:
 +    bpf_object__close(obj);
@@ -110,7 +111,7 @@ index f087ea6..75fbfab 100644
  }
  
  static int GetMapFdByProgId(__u32 progId)
-@@ -377,7 +396,6 @@ static int CgrpV2PrioSet(const char *cgrpPath, int prio)
+@@ -377,7 +397,6 @@ static int CgrpV2PrioSet(const char *cgrpPath, int prio)
      int key = 0;
      int cgFd;
      int mapFd;
@@ -118,7 +119,7 @@ index f087ea6..75fbfab 100644
      int bpfprogFd;
  
      cgFd = open(cgrpPath, O_RDONLY);
-@@ -392,7 +410,7 @@ static int CgrpV2PrioSet(const char *cgrpPath, int prio)
+@@ -392,7 +411,7 @@ static int CgrpV2PrioSet(const char *cgrpPath, int prio)
          return EXIT_FAIL;
      }
  
@@ -127,7 +128,7 @@ index f087ea6..75fbfab 100644
      if (mapFd == -1) {
          goto err;
      }
-@@ -416,11 +434,9 @@ static int CgrpV2PrioSet(const char *cgrpPath, int prio)
+@@ -416,11 +435,9 @@ static int CgrpV2PrioSet(const char *cgrpPath, int prio)
  
      BWM_LOG_INFO("set prio success\n");
      (void)close(cgFd);
