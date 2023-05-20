@@ -1,0 +1,95 @@
+From b928100cf448012a54b95fe1a983c7ff7a0c8823 Mon Sep 17 00:00:00 2001
+From: JofDiamonds <kwb0523@163.com>
+Date: Fri, 19 May 2023 18:28:09 +0800
+Subject: [PATCH] fix offline packets block
+
+---
+ bpf/bwm_tc.c | 15 ++++++++++-----
+ bpf/bwm_tc.h |  6 ++++++
+ 2 files changed, 16 insertions(+), 5 deletions(-)
+
+diff --git a/bpf/bwm_tc.c b/bpf/bwm_tc.c
+index 286783a..d04d454 100644
+--- a/bpf/bwm_tc.c
++++ b/bpf/bwm_tc.c
+@@ -68,12 +68,13 @@ static void bwm_online(const struct __sk_buff *skb, struct edt_throttle *throttl
+ 	__sync_fetch_and_add(&throttle->stats.online_pkts, 1);
+ }
+ 
+-static void bwm_offline(struct __sk_buff *skb, struct edt_throttle *throttle)
++static int bwm_offline(struct __sk_buff *skb, struct edt_throttle *throttle)
+ {
+ 	unsigned long long t_cur;
+ 	unsigned long long t_send;
+ 	unsigned long long t_delay;
+ 	unsigned long long t_next;
++	unsigned long long t_last = throttle->t_last;
+ 
+ 	__sync_fetch_and_add(&throttle->tx_bytes, skb->len);
+ 	__sync_fetch_and_add(&throttle->stats.offline_pkts, 1);
+@@ -85,17 +86,20 @@ static void bwm_offline(struct __sk_buff *skb, struct edt_throttle *throttle)
+ 	if (t_send < t_cur)
+ 		t_send = t_cur;
+ 
++	if ((skb->sk) && (bpf_tcp_sock(skb->sk) == NULL) && (t_last > t_cur) && ((t_last - t_cur) > MAX_DELAY_STAMP))
++		return TC_ACT_SHOT;
++
+ 	t_delay = skb->len * NSEC_PER_SEC / throttle->rate;
+ 	t_next = throttle->t_last + t_delay;
+ 
+ 	if (t_next <= t_send) {
+ 		throttle->t_last = t_send;
+-		return;
++		return TC_ACT_OK;
+ 	}
+ 
+ 	skb->tstamp = t_next;
+ 	throttle->t_last = t_next;
+-	return;
++	return TC_ACT_OK;
+ }
+ 
+ 
+@@ -141,6 +145,7 @@ int bwm_tc(struct __sk_buff *skb)
+ 	struct edt_throttle_cfg * cfg = NULL;
+ 	unsigned int map_index = 0;
+ 	unsigned int priority_index = 0;
++	int ret = TC_ACT_OK;
+ 
+ 	cfg = bpf_map_lookup_elem(&throttle_cfg, &map_index);
+ 	if (cfg == NULL)
+@@ -161,12 +166,12 @@ int bwm_tc(struct __sk_buff *skb)
+ 	if (skb->priority != OFFLINE_PRIO)
+ 		bwm_online(skb_con, throttle);
+ 	else
+-		bwm_offline(skb, throttle);
++		ret = bwm_offline(skb, throttle);
+ 
+ 	adjust_rate(cfg_con, throttle);
+ 
+ 	bpf_printk("[tc.c]prio=%u\n", skb->priority);
+-	return TC_ACT_OK;
++	return ret;
+ }
+ 
+ char _license[] SEC("license") = "GPL";
+diff --git a/bpf/bwm_tc.h b/bpf/bwm_tc.h
+index ff60f66..5f5ee8a 100644
+--- a/bpf/bwm_tc.h
++++ b/bpf/bwm_tc.h
+@@ -14,6 +14,12 @@
+ #define NSEC_PER_SEC (1000000000ULL)
+ #define NSEC_PER_MSEC (1000000ULL) // NSEC_PER_MSEC * 10 = 1s
+ 
++/*
++ * NSEC_PER_MSEC * 10 = 10s, when the offline packets overstocked exceeds this value,
++ * actively discarding non tcp packets.
++*/
++#define MAX_DELAY_STAMP (10000000000ULL)
++
+ #define DEFAULT_LOW_BANDWIDTH	(20LL * 1024 * 1024)
+ #define DEFAULT_HIGH_BANDWIDTH	(1LL * 1024 * 1024 * 1024)
+ #define DEFAULT_WATERLINE	(20LL * 1024 * 1024)
+-- 
+2.33.0
+
