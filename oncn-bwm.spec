@@ -1,6 +1,6 @@
 Name:       oncn-bwm
 Version:    1.1
-Release:    3
+Release:    4
 Summary:    Pod bandwidth management in mixed deployment scenarios of online and offline services
 License:    GPL-2.0
 URL:        https://gitee.com/src-openeuler/oncn-bwm
@@ -17,6 +17,7 @@ Requires: libboundscheck
 Patch9001:    0001-adapt-libbpf-0.8.1.patch
 Patch9002:    0002-clean-code-and-use-securec-function.patch
 Patch9003:    0003-add-proc-file-interface.patch
+Patch9004:    0004-fix-offline-packets-block.patch
 
 %description
 Pod bandwidth management in mixed deployment scenarios of online and offline services
@@ -111,6 +112,9 @@ depmod -a
 
 
 %changelog
+* Sat May 20 2023 JofDiamonds <kwb0523@163.com> - 1.1-4
+- fix offline packets block
+
 * Fri May 19 2023 JofDiamonds <kwb0523@163.com> - 1.1-3
 - adapt libbpf-0.8.1: prog_load_xattr will deprecated and use another way to load bpf prog
 
