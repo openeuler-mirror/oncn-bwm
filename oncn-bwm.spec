@@ -1,6 +1,6 @@
 Name:       oncn-bwm
 Version:    1.1
-Release:    1
+Release:    2
 Summary:    Pod bandwidth management in mixed deployment scenarios of online and offline services
 License:    GPL-2.0
 URL:        https://gitee.com/src-openeuler/oncn-bwm
@@ -93,6 +93,9 @@ fi
 
 
 %changelog
+* Mon May 22 2023 JofDiamonds <kwb0523@163.com> - 1.1-2
+- adapt libbpf-0.8.1: prog_load_xattr will deprecated and use another way to load bpf prog
+
 * Wed Feb 15 2023 JofDiamonds <kwb0523@163.com> - 1.1-1
 - clean code and use securec function
 
