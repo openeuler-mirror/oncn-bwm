@@ -33,3 +33,13 @@ monitor_interval    输出带宽的最小时间间隔(ms)
 high_threshold      离线流量低于此门限即打印[limiting]
 bandwidth_low, bandwidth_high      离线流量在此范围即打印[offline_exists]
 
+
+# 入向脚本
+./bwm_monitor_ingress.bt为入向流量脚本，其用法与前述用法一致。
+
+运行入向脚本，需要首先安装linux header
+yum install -y kernel-devel-$(uname -r)
+
+目前需要通过手动匹配的ip的方式进行离线流量标识，即在脚本130行通过判断条件对数据包IP与目标IP进行比对。
+(注意比较值使用的是网络字节序的IP，bwmcli工具在添加IP的时候会打印IP对应的网络字节序值)。
+完成值修改后，通过`install -Dpm 0500 tools/bwm_monitor_ingress.bt /usr/bin`重新安装脚本。
