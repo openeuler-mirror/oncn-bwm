@@ -8,6 +8,10 @@
 #define THROTTLE_MAP_PATH 	"/sys/fs/bpf/tc/globals/throttle_map"
 #define THROTTLE_CFG_PATH 	"/sys/fs/bpf/tc/globals/throttle_cfg"
 
+#define THROTTLE_I_MAP_PATH 	"/sys/fs/bpf/tc/globals/throttle_i_map"
+#define THROTTLE_I_CFG_PATH 	"/sys/fs/bpf/tc/globals/throttle_i_cfg"
+#define IPS_I_MAP_PATH 	"/sys/fs/bpf/tc/globals/ips_i_map"
+
 #undef NSEC_PER_SEC
 #undef NSEC_PER_MSEC
 
@@ -19,6 +23,8 @@
 #define DEFAULT_WATERLINE	(20LL * 1024 * 1024)
 #define LOWEST_BANDWIDTH	(1LL * 1024 * 1024)
 #define HIGHEST_BANDWIDTH	(9999LL * 1024 * 1024 * 1024)
+
+#define IPS_MAX_NUM 4096
 
 struct throttle_stats {
 	unsigned long long check_times;
