@@ -13,11 +13,13 @@
 #define EXIT_FAIL_MEM       4
 
 #define PRIO_LEN            32
+#define IP_LEN              16 // ipv4
 #define ARG_LEN             16
 
 #define BPF_PROG_PATH       "/usr/share/bwmcli/"
 #define CGRP_PRIO_PROG      BPF_PROG_PATH"bwm_prio_kern.o"
 #define TC_PROG             BPF_PROG_PATH"bwm_tc.o"
+#define TC_PROG_I           BPF_PROG_PATH"bwm_tc_i.o"
 
 #define MAX_PROG_CNT        10
 #define MAX_CMD_LEN         (256 + NAME_MAX)
@@ -41,11 +43,11 @@ enum {
     GB_UNIT     =       GB,
 };
 
-typedef int NetdevCallback(const char *ethdev, const void *arg);
+typedef int NetdevCallback(const char *ethdev, const void *arg, int isIngress);
 
 struct CfgOperations {
-    int (*setCfg)(void *, void *);
-    int (*getCfg)(void *);
+    int (*setCfg)(void *, void *, int);
+    int (*getCfg)(void *, int);
 };
 
 struct CfgOption {

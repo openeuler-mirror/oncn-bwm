@@ -14,6 +14,7 @@
 #include <syslog.h>
 #include <sys/resource.h>
 #include <linux/if.h>
+#include <arpa/inet.h>
 
 #include <bpf/bpf.h>
 #include <getopt.h>
@@ -48,6 +49,29 @@ static struct TcCmd g_enableSeq[] = {
     }
 };
 
+static struct TcCmd g_enableSeqIngress[] = {
+    {
+        .cmdStr = "tc qdisc del dev %s root >/dev/null 2>&1",
+        .verifyRet = false,
+    },
+    {
+        .cmdStr = "tc qdisc del dev %s clsact >/dev/null 2>&1",
+        .verifyRet = false,
+    },
+    {
+        .cmdStr = "tc qdisc add dev %s root fq",
+        .verifyRet = true,
+    },
+    {
+        .cmdStr = "tc qdisc add dev %s clsact",
+        .verifyRet = true,
+    },
+    {
+        .cmdStr = "tc filter add dev %s egress bpf direct-action obj " TC_PROG_I " sec tc >/dev/null 2>&1",
+        .verifyRet = true,
+    }
+};
+
 static struct TcCmd g_disableSeq[] = {
     {
         .cmdStr = "tc filter del dev %s egress",
@@ -65,36 +89,44 @@ static struct TcCmd g_disableSeq[] = {
 
 static const struct option g_helps[] = {
     {"Display this information",                no_argument,            NULL, 'h' },
-    {"Set configuration", required_argument,  NULL, 's' },
-    {"Display configuration", required_argument,  NULL, 'p' },
-    {"Enable bandwidth management of the network device <ethx>",        required_argument,      NULL, 'e' },
-    {"Disable bandwidth management of the network device <ethx>",        required_argument,      NULL, 'd' },
+    {"Set egress configuration", required_argument,  NULL, 's' },
+    {"Set ingress configuration", required_argument,  NULL, 'S' },
+    {"Display egress configuration", required_argument,  NULL, 'p' },
+    {"Display ingress configuration", required_argument,  NULL, 'P' },
+    {"Enable egress bandwidth management of the network device <ethx>",        required_argument,      NULL, 'e' },
+    {"Enable ingress bandwidth management of the network device <ethx>",        required_argument,      NULL, 'E' },
+    {"Disable egress bandwidth management of the network device <ethx>",        required_argument,      NULL, 'd' },
+    {"Disable ingress bandwidth management of the network device <ethx>",        required_argument,      NULL, 'D' },
     {"Display the version number of bwmcli",            no_argument,        NULL, 'v' },
     {0, 0, NULL,  0 }
 };
 
 static const struct option g_longOptions[] = {
     {"help",        no_argument,            NULL, 'h' },
-    {"set=<<path> <prio>|bandwidth <low,hi>|waterline <val>>",         required_argument,  NULL, 's' },
-    {"print=<<path>|bandwidth|waterline|stats|devs>",       required_argument,  NULL, 'p' },
-    {"enable[=<ethx>]",      optional_argument,      NULL, 'e' },
-    {"disable[=<ethx>]",     optional_argument,      NULL, 'd' },
+    {"set=<<path> <prio>|bandwidth <low,hi>|waterline <val>> | egress",         required_argument,  NULL, 's' },
+    {"set=<bandwidth <low,hi>|waterline <val>> | ingress",         required_argument,  NULL, 'S' },
+    {"print=<<path>|bandwidth|waterline|stats|devs> | egress",       required_argument,  NULL, 'p' },
+    {"print=<bandwidth|waterline|stats|devs> | ingress",       required_argument,  NULL, 'P' },
+    {"enable[=<ethx>] | egress\t",      optional_argument,      NULL, 'e' },
+    {"enable[=<ethx>] | ingress\t",      optional_argument,      NULL, 'E' },
+    {"disable[=<ethx>] | egress\t",     optional_argument,      NULL, 'd' },
+    {"disable[=<ethx>] | ingress\t",     optional_argument,      NULL, 'D' },
     {"version",     no_argument,        NULL, 'v' },
     {0, 0, NULL,  0 }
 };
 
 static char g_cmdBuf[MAX_CMD_LEN];
 
-static int GetCgroupPrio(void *cgrpPath);
-static int SetCgrpPrio(void *cgrpPath, void *args);
-static int GetBandwidth(void *unused);
-static int SetBandwidth(void *cgrpPath, void *args);
-static int GetWaterline(void *unused);
-static int SetWaterline(void *cgrpPath, void *args);
-static int GetStats(void *unused);
-static int GetDevs(void *unused);
-static int ForeachEthdev(NetdevCallback fn, const void *arg);
-static bool InitCfgMap();
+static int GetCgroupPrio(void *cgrpPath, int isIngress); // don't need isIngress
+static int SetCgrpPrio(void *cgrpPath, void *args, int isIngress); // don't need isIngress
+static int GetBandwidth(void *unused, int isIngress);
+static int SetBandwidth(void *cgrpPath, void *args, int isIngress);
+static int GetWaterline(void *unused, int isIngress);
+static int SetWaterline(void *cgrpPath, void *args, int isIngress);
+static int GetStats(void *unused, int isIngress);
+static int GetDevs(void *unused, int isIngress);
+static int ForeachEthdev(NetdevCallback fn, const void *arg, int isIngress);
+static bool InitCfgMap(int isIngress);
 
 static struct CfgOption g_defaultOption = {
     .name = "",
@@ -501,30 +533,26 @@ static int NetdevEnabledSub(const char *format, const char *ethdev)
 }
 
 // return: 1 is enabled. 0 is disabled.
-static int NetdevEnabled(const char *ethdev)
+static int NetdevEnabled(const char *ethdev, int isIngress)
 {
-    const char *format = "tc filter show dev %s egress|grep bwm_tc.o >/dev/null 2>&1";
-    if (NetdevEnabledSub(format, ethdev) == 0) {
-        return 0;
+    const char *format = isIngress ? "tc filter show dev %s egress|grep bwm_tc_i.o >/dev/null 2>&1" : "tc filter show dev %s egress|grep bwm_tc.o >/dev/null 2>&1" ;
+    
+    if (NetdevEnabledSub(format, ethdev) != 0) {
+        return 1;
     }
 
-    const char *format1 = "tc qdisc ls dev %s|grep \"qdisc fq \" >/dev/null 2>&1";
-    if (NetdevEnabledSub(format1, ethdev) == 0) {
-        return 0;
-    }
-
-    return 1;
+    return 0;
 }
 
-static int DisableSpecificNetdevice(const char *ethdev, const void *unused)
+static int DisableSpecificNetdevice(const char *ethdev, const void *unused, int isIngress)
 {
     size_t i;
     int ret;
 
     BWM_LOG_DEBUG("DisableSpecificNetdevice: %s\n", ethdev);
 
-    if (NetdevEnabled(ethdev) == 0) {
-        BWM_LOG_INFO("%s has already disabled\n", ethdev);
+    if (NetdevEnabled(ethdev, isIngress) == 0) {
+        BWM_LOG_INFO("%s %s has already disabled\n", ethdev, (isIngress ? "ingress" : "egress"));
         return EXIT_OK;
     }
 
@@ -616,44 +644,78 @@ qdisc:
     return ret == 0 ? 1 : 0;
 }
 
-static int EnableSpecificNetdevice(const char *ethdev, const void *unused)
+static int EnableSpecificNetdevice(const char *ethdev, const void *unused, int isIngress)
 {
     unsigned long i;
     int ret;
 
-    BWM_LOG_DEBUG("EnableSpecificNetdevice: %s\n", ethdev);
+    if (isIngress) {
+        BWM_LOG_DEBUG("EnableSpecificNetdeviceIngress: %s\n", ethdev);
 
-    if (NetdevEnabled(ethdev) == 1) {
-        BWM_LOG_INFO("%s has already enabled\n", ethdev);
-        return EXIT_OK;
-    }
-
-    if (!DefaultTc(ethdev)) {
-        BWM_LOG_INFO("%s has already enabled other TC\n", ethdev);
-        return EXIT_OK;
-    }
-
-    for (i = 0; i < sizeof(g_enableSeq) / sizeof(struct TcCmd); i++) {
-        ret = snprintf(g_cmdBuf, MAX_CMD_LEN, g_enableSeq[i].cmdStr, ethdev);
-        if (ret < 0 || g_cmdBuf[MAX_CMD_LEN - 1] != '\0') {
-            BWM_LOG_ERR("Invalid net device: %s\n", ethdev);
-            return EXIT_FAIL_OPTION;
+        if (NetdevEnabled(ethdev, isIngress) == 1) {
+            BWM_LOG_INFO("%s %s has already enabled\n", ethdev, (isIngress ? "ingress" : "egress"));
+            return EXIT_OK;
         }
 
-        ret = system(g_cmdBuf);
-        if (ret < 0) {
-            BWM_LOG_ERR("execute cmd[%s] error: %d\n", g_cmdBuf, ret);
-            goto clear;
+        if (!DefaultTc(ethdev)) {
+            BWM_LOG_INFO("%s has already enabled other TC\n", ethdev);
+            return EXIT_OK;
         }
 
-        ret = WEXITSTATUS(ret);
-        if (ret && g_enableSeq[i].verifyRet) {
-            BWM_LOG_ERR("execute cmd ret wrong: %s\n", g_enableSeq[i].cmdStr);
-            goto clear;
+        for (i = 0; i < sizeof(g_enableSeqIngress) / sizeof(struct TcCmd); i++) {
+            ret = snprintf(g_cmdBuf, MAX_CMD_LEN, g_enableSeqIngress[i].cmdStr, ethdev);
+            if (ret < 0 || g_cmdBuf[MAX_CMD_LEN - 1] != '\0') {
+                BWM_LOG_ERR("Invalid net device: %s\n", ethdev);
+                return EXIT_FAIL_OPTION;
+            }
+
+            ret = system(g_cmdBuf);
+            if (ret < 0) {
+                BWM_LOG_ERR("execute cmd[%s] error: %d\n", g_cmdBuf, ret);
+                goto clear;
+            }
+
+            ret = WEXITSTATUS(ret);
+            if (ret && g_enableSeqIngress[i].verifyRet) {
+                BWM_LOG_ERR("execute cmd ret wrong: %s\n", g_enableSeqIngress[i].cmdStr);
+                goto clear;
+            }
+        }
+    } else {
+        BWM_LOG_DEBUG("EnableSpecificNetdevice: %s\n", ethdev);
+
+        if (NetdevEnabled(ethdev, isIngress) == 1) {
+            BWM_LOG_INFO("%s has already enabled %s\n", ethdev, isIngress ? "ingress" : "egress");
+            return EXIT_OK;
+        }
+
+        if (!DefaultTc(ethdev)) {
+            BWM_LOG_INFO("%s has already enabled other TC\n", ethdev);
+            return EXIT_OK;
+        }
+
+        for (i = 0; i < sizeof(g_enableSeq) / sizeof(struct TcCmd); i++) {
+            ret = snprintf(g_cmdBuf, MAX_CMD_LEN, g_enableSeq[i].cmdStr, ethdev);
+            if (ret < 0 || g_cmdBuf[MAX_CMD_LEN - 1] != '\0') {
+                BWM_LOG_ERR("Invalid net device: %s\n", ethdev);
+                return EXIT_FAIL_OPTION;
+            }
+
+            ret = system(g_cmdBuf);
+            if (ret < 0) {
+                BWM_LOG_ERR("execute cmd[%s] error: %d\n", g_cmdBuf, ret);
+                goto clear;
+            }
+
+            ret = WEXITSTATUS(ret);
+            if (ret && g_enableSeq[i].verifyRet) {
+                BWM_LOG_ERR("execute cmd ret wrong: %s\n", g_enableSeq[i].cmdStr);
+                goto clear;
+            }
         }
     }
-
-    if (!InitCfgMap()) {
+    
+    if (!InitCfgMap(isIngress)) {
         goto clear;
     }
 
@@ -661,7 +723,7 @@ static int EnableSpecificNetdevice(const char *ethdev, const void *unused)
     return EXIT_OK;
 
 clear:
-    (void)DisableSpecificNetdevice(ethdev, NULL);
+    (void)DisableSpecificNetdevice(ethdev, NULL, isIngress);
     return EXIT_FAIL;
 }
 
@@ -675,7 +737,7 @@ static bool CheckDevNameIsLegalChar(const char c)
     return false;
 }
 
-static int ForeachEthdev(NetdevCallback fn, const void *arg)
+static int ForeachEthdev(NetdevCallback fn, const void *arg, int isIngress)
 {
     int ret = EXIT_OK;
     int i;
@@ -723,7 +785,7 @@ static int ForeachEthdev(NetdevCallback fn, const void *arg)
             continue;
         }
 
-        ret = fn(start, arg);
+        ret = fn(start, arg, isIngress);
         if (ret != EXIT_OK) {
             (void)fclose(fstream);
             return ret;
@@ -734,25 +796,28 @@ static int ForeachEthdev(NetdevCallback fn, const void *arg)
     return ret;
 }
 
-static int DisableAllNetdevice(void)
+static int DisableAllNetdevice(int isIngress)
 {
     int ret;
     BWM_LOG_DEBUG("DisableAllNetdevice\n");
 
-    ret = ForeachEthdev(DisableSpecificNetdevice, NULL);
+    ret = ForeachEthdev(DisableSpecificNetdevice, NULL, isIngress);
 
     return ret;
 }
 
-static int EnableAllNetdevice(void)
+static int EnableAllNetdevice(int isIngress)
 {
     int ret;
 
-    BWM_LOG_DEBUG("EnableAllNetdevice\n");
+    if (isIngress)
+        BWM_LOG_DEBUG("EnableAllNetdevice\n");
+    else
+        BWM_LOG_DEBUG("EnableAllNetdeviceIngress\n");
 
-    ret = ForeachEthdev(EnableSpecificNetdevice, NULL);
+    ret = ForeachEthdev(EnableSpecificNetdevice, NULL, isIngress);
     if (ret != EXIT_OK) {
-        (void)DisableAllNetdevice();
+        (void)DisableAllNetdevice(isIngress);
     }
 
     return ret;
@@ -767,19 +832,19 @@ static void PrintThrottle(const struct edt_throttle *throttle)
     BWM_LOG_INFO("offline_rate: %llu\n", throttle->stats.offline_rate_past);
 }
 
-static int DevStatShow(const char *ethdev, const void *arg)
+static int DevStatShow(const char *ethdev, const void *arg, int isIngress)
 {
     int ret;
 
-    ret = NetdevEnabled(ethdev);
-    BWM_LOG_INFO("%-16s: %s\n", ethdev, (ret == 0) ? "disabled" : "enabled");
+    ret = NetdevEnabled(ethdev, isIngress);
+    BWM_LOG_INFO("%-16s: %s\n", ethdev, (ret == 0) ? "disabled" : (isIngress ? "ingress enabled" : "egress enabled"));
 
     return EXIT_OK;
 }
 
-static void PrintDevsStats(void)
+static void PrintDevsStats(int isIngress)
 {
-    (void)ForeachEthdev(DevStatShow, NULL);
+    (void)ForeachEthdev(DevStatShow, NULL, isIngress);
 }
 
 static struct CfgOption *FindOptions(const char *cfg)
@@ -795,20 +860,20 @@ static struct CfgOption *FindOptions(const char *cfg)
     return &g_defaultOption;
 }
 
-static int GetCfgsInfo(char *cfg, int cfgLen)
+static int GetCfgsInfo(char *cfg, int cfgLen, int isIngress)
 {
     struct CfgOption *option;
 
     option = FindOptions(cfg);
-    return option->op.getCfg(cfg);
+    return option->op.getCfg(cfg, isIngress);
 }
 
-static int SetCfgsInfo(char *cfg, int cfgLen, char *args, int argsLen)
+static int SetCfgsInfo(char *cfg, int cfgLen, char *args, int argsLen, int isIngress)
 {
     struct CfgOption *option;
 
     option = FindOptions(cfg);
-    return option->op.setCfg(cfg, args);
+    return option->op.setCfg(cfg, args, isIngress);
 }
 
 static int BreakMultiArgs(char *args, char arg1[], char arg2[], int mutilArgs)
@@ -834,7 +899,6 @@ static int BreakMultiArgs(char *args, char arg1[], char arg2[], int mutilArgs)
     }
     return EXIT_OK;
 }
-
 
 static int ParseUnit(char arg[], int setPrio,  long long *val)
 {
@@ -895,7 +959,7 @@ static int ParseArgs(char *args, long long *val1, long long *val2, int mutilArgs
     return EXIT_OK;
 }
 
-static int CfgsInfo(int argc, char **argv, int isSet)
+static int CfgsInfo(int argc, char **argv, int isSet, int isIngress)
 {
     int ret;
     char option[PATH_MAX + 1] = {0};
@@ -912,7 +976,7 @@ static int CfgsInfo(int argc, char **argv, int isSet)
             (void)fprintf(stderr, "invalid option, extra parameter: %s\n", optarg);
             return EXIT_FAIL_OPTION;
         }
-        ret = GetCfgsInfo(option, PATH_MAX + 1);
+        ret = GetCfgsInfo(option, PATH_MAX + 1, isIngress);
         return ret;
     }
 
@@ -922,7 +986,7 @@ static int CfgsInfo(int argc, char **argv, int isSet)
         return EXIT_FAIL_OPTION;
     }
 
-    ret = SetCfgsInfo(option, PATH_MAX + 1, args, PRIO_LEN);
+    ret = SetCfgsInfo(option, PATH_MAX + 1, args, PRIO_LEN, isIngress);
     if (ret != EXIT_OK) {
         return ret;
     }
@@ -933,24 +997,24 @@ static int CfgsInfo(int argc, char **argv, int isSet)
     return EXIT_OK;
 }
 
-static int NetdevCmp(const char *ethdev, const void *arg)
+static int NetdevCmp(const char *ethdev, const void *arg, int isIngress)
 {
     return (strcmp(ethdev, arg) == 0) ? 1 : 0;
 }
 
 inline static int IsValidEthdev(const char *dev)
 {
-    return ForeachEthdev(NetdevCmp, dev);
+    return ForeachEthdev(NetdevCmp, dev, 0);
 }
 
-static int ChangeNetdeviceStatus(int argc, char **argv, int enable)
+static int ChangeNetdeviceStatus(int argc, char **argv, int enable, int isIngress)
 {
     int ret;
     char ethdev[NAME_MAX + 1] = {0};
 
     if (optarg == NULL && (optind >= argc || argv[optind][0] == '-')) {
         /* enable all eth device */
-        ret = (enable == 0) ? DisableAllNetdevice() : EnableAllNetdevice();
+        ret = (enable == 0) ? DisableAllNetdevice(isIngress) : EnableAllNetdevice(isIngress);
         return ret;
     }
 
@@ -971,12 +1035,12 @@ static int ChangeNetdeviceStatus(int argc, char **argv, int enable)
         return EXIT_FAIL_OPTION;
     }
 
-    ret = (enable == 1) ? EnableSpecificNetdevice(ethdev, NULL) : DisableSpecificNetdevice(ethdev, NULL);
-
+    ret = (enable == 1) ? EnableSpecificNetdevice(ethdev, NULL, isIngress) : DisableSpecificNetdevice(ethdev, NULL, isIngress);
+    
     return ret;
 }
 
-static int GetCgroupPrio(void *cgrpPath)
+static int GetCgroupPrio(void *cgrpPath, int isIngress)
 {
     int ret;
 
@@ -992,7 +1056,7 @@ static int GetCgroupPrio(void *cgrpPath)
     return CgrpV2PrioGet(cgrpPath);
 }
 
-static int SetCgrpPrio(void *cgrpPath, void *args)
+static int SetCgrpPrio(void *cgrpPath, void *args, int isIngress)
 {
     int ret;
     long long prio, tmp;
@@ -1018,47 +1082,23 @@ static int SetCgrpPrio(void *cgrpPath, void *args)
     return CgrpV2PrioSet(cgrpPath, (int)prio);
 }
 
-static int ReadStats(struct edt_throttle *stats)
+static int ReadCfgByPath(char *path, struct edt_throttle_cfg *cfg)
 {
     int ret;
     int mapIndex = 0;
     int fd;
 
-    fd = bpf_obj_get(THROTTLE_MAP_PATH);
-    if (fd < 0) {
-        BWM_LOG_ERR("ERROR: ReadStats bpf_obj_get failed, Not enabled? %s fd:%d errno:%d\n",
-            THROTTLE_MAP_PATH, fd, errno);
-        return EXIT_FAIL_BPF;
-    }
-
-    ret = bpf_map_lookup_elem(fd, &mapIndex, stats);
-    if (ret != 0) {
-        BWM_LOG_ERR("ERROR: ReadStats can't find map. %s ret:%d errno:%d\n",
-            THROTTLE_MAP_PATH, ret, errno);
-        (void)close(fd);
-        return EXIT_FAIL_BPF;
-    }
-    (void)close(fd);
-    return EXIT_OK;
-}
-
-static int ReadCfg(struct edt_throttle_cfg *cfg)
-{
-    int ret;
-    int mapIndex = 0;
-    int fd;
-
-    fd = bpf_obj_get(THROTTLE_CFG_PATH);
+    fd = bpf_obj_get(path);
     if (fd < 0) {
         BWM_LOG_ERR("ERROR: ReadCfg bpf_obj_get failed, Not enabled? %s fd:%d errno:%d\n",
-            THROTTLE_CFG_PATH, fd, errno);
+            path, fd, errno);
         return EXIT_FAIL_BPF;
     }
-
+    
     ret = bpf_map_lookup_elem(fd, &mapIndex, cfg);
     if (ret != 0) {
         BWM_LOG_ERR("ERROR: ReadCfg can't find map. %s ret:%d errno:%d\n",
-            THROTTLE_CFG_PATH, ret, errno);
+            path, ret, errno);
         (void)close(fd);
         return EXIT_FAIL_BPF;
     }
@@ -1067,36 +1107,101 @@ static int ReadCfg(struct edt_throttle_cfg *cfg)
     return EXIT_OK;
 }
 
-static int UpdateCfg(const struct edt_throttle_cfg *cfg)
+static int UpdateCfgByPath(char *path, struct edt_throttle_cfg *cfg)
 {
     int ret;
     int mapIndex = 0;
     int fd;
 
-    fd = bpf_obj_get(THROTTLE_CFG_PATH);
+    fd = bpf_obj_get(path);
     if (fd < 0) {
         BWM_LOG_ERR("ERROR: UpdateCfg bpf_obj_get failed, Not enabled? %s fd:%d errno:%d\n",
-            THROTTLE_CFG_PATH, fd, errno);
+            path, fd, errno);
         return EXIT_FAIL_BPF;
     }
-
+    
     ret = bpf_map_update_elem(fd, &mapIndex, cfg, BPF_ANY);
     if (ret != 0) {
-        BWM_LOG_ERR("ERROR: UpdateCfg update map fail. %s ret:%d errno:%d\n",
-            THROTTLE_CFG_PATH, ret, errno);
+        BWM_LOG_ERR("ERROR: UpdateCfg can't update map. %s ret:%d errno:%d\n",
+            path, ret, errno);
         (void)close(fd);
         return EXIT_FAIL_BPF;
     }
+
     (void)close(fd);
     return EXIT_OK;
 }
 
-static bool InitCfgMap()
+static int ReadStatsByPath(char *path, struct edt_throttle *stats)
+{
+    int ret;
+    int mapIndex = 0;
+    int fd;
+
+    fd = bpf_obj_get(path);
+    if (fd < 0) {
+        BWM_LOG_ERR("ERROR: ReadStats bpf_obj_get failed, Not enabled? %s fd:%d errno:%d\n",
+            path, fd, errno);
+        return EXIT_FAIL_BPF;
+    }
+    
+    ret = bpf_map_lookup_elem(fd, &mapIndex, stats);
+    if (ret != 0) {
+        BWM_LOG_ERR("ERROR: ReadStats can't find map. %s ret:%d errno:%d\n",
+            path, ret, errno);
+        (void)close(fd);
+        return EXIT_FAIL_BPF;
+    }
+
+    (void)close(fd);
+    return EXIT_OK;
+}
+
+static int ReadStats(struct edt_throttle *stats, int isIngress)
+{
+    int ret;
+
+    if (isIngress) {
+        ret = ReadStatsByPath(THROTTLE_I_MAP_PATH, stats);
+    } else {
+        ret = ReadStatsByPath(THROTTLE_MAP_PATH, stats);
+    }
+
+    return ret;
+}
+
+static int ReadCfg(struct edt_throttle_cfg *cfg, int isIngress)
+{
+    int ret;
+
+    if (isIngress) {
+        ret = ReadCfgByPath(THROTTLE_I_CFG_PATH, cfg);
+    } else {
+        ret = ReadCfgByPath(THROTTLE_CFG_PATH, cfg);
+    }
+    
+    return ret;
+}
+
+static int UpdateCfg(struct edt_throttle_cfg *cfg, int isIngress)
+{
+    int ret;
+
+    if (isIngress) {
+        ret = UpdateCfgByPath(THROTTLE_I_CFG_PATH, cfg);
+    } else {
+        ret = UpdateCfgByPath(THROTTLE_CFG_PATH, cfg);
+    }
+
+    return ret;
+}
+
+static bool InitCfgMap(int isIngress)
 {
     struct edt_throttle_cfg cfg = {0};
     int ret;
 
-    ret = ReadCfg(&cfg);
+    ret = ReadCfg(&cfg, isIngress);
     if (ret != EXIT_OK) {
         BWM_LOG_ERR("InitCfgMap ReadCfg err: %d\n", ret);
         return false;
@@ -1107,7 +1212,7 @@ static bool InitCfgMap()
         cfg.low_rate = DEFAULT_LOW_BANDWIDTH;
         cfg.high_rate = DEFAULT_HIGH_BANDWIDTH;
 
-        ret = UpdateCfg(&cfg);
+        ret = UpdateCfg(&cfg, isIngress);
         if (ret != EXIT_OK) {
             BWM_LOG_ERR("InitCfgMap UpdateCfg err: %d\n", ret);
             return false;
@@ -1117,12 +1222,59 @@ static bool InitCfgMap()
     return true;
 }
 
-static int GetBandwidth(void *unused)
+static int UpdateIp(int isDelete)
+{
+    int ret;
+    int fd;
+    int priority = 1;
+    struct in_addr ip;
+    __u32 ipUint;
+
+    char ipStr[IP_LEN + 1] = {0};
+    
+    (void)strncpy(ipStr, optarg, IP_LEN);
+    if (ipStr[IP_LEN] != '\0') {
+        (void)fprintf(stderr, "invalid ip, too long: %s\n", optarg);
+        return EXIT_FAIL_OPTION;
+    }
+
+    // ip char* -> u32, convert result is network byte order
+    ret = inet_pton(AF_INET, ipStr, &ip);
+    if (ret == 0 || errno == EAFNOSUPPORT) {
+        (void)fprintf(stderr, "invalid ip, transfer ip to u32 error\n");
+        return EXIT_FAIL_OPTION;
+    }
+
+    ipUint = ip.s_addr;  // network byte order
+
+    fd = bpf_obj_get(IPS_I_MAP_PATH);
+    if (fd < 0) {
+        BWM_LOG_ERR("ERROR: %s bpf_obj_get failed, Not enabled? %s fd:%d errno:%d\n",
+            isDelete ? "RemoveIp" : "AddIp", IPS_I_MAP_PATH, fd, errno);
+        return EXIT_FAIL_BPF;
+    }
+
+    ret = isDelete ? bpf_map_delete_elem(fd, &ipUint) : bpf_map_update_elem(fd, &ipUint, &priority, BPF_ANY);
+    if (ret != 0) {
+        BWM_LOG_ERR("ERROR: %s map fail. %s ret:%d errno:%d\n",
+            isDelete ? "RemoveIp" : "AddIp", IPS_I_MAP_PATH, ret, errno);
+        (void)close(fd);
+        return EXIT_FAIL_BPF;
+    }
+
+    if (!isDelete)
+        BWM_LOG_INFO("ip(network byte order): %u\n", ipUint);
+    BWM_LOG_INFO("%s %s success\n", isDelete ? "RemoveIp" : "AddIp", ipStr);
+    (void)close(fd);
+    return EXIT_OK;
+}
+
+static int GetBandwidth(void *unused, int isIngress)
 {
     int ret;
     struct edt_throttle_cfg cfg = {0};
 
-    ret = ReadCfg(&cfg);
+    ret = ReadCfg(&cfg, isIngress);
     if (ret != EXIT_OK) {
         return ret;
     }
@@ -1131,14 +1283,15 @@ static int GetBandwidth(void *unused)
         (cfg.high_rate == 0) ? DEFAULT_HIGH_BANDWIDTH : cfg.high_rate);
     return EXIT_OK;
 }
-static int SetBandwidth(void *cgrpPath, void *args)
+
+static int SetBandwidth(void *cgrpPath, void *args, int isIngress)
 {
     int ret;
     long long low, high;
     unsigned long long lowtemp, hightemp;
     struct edt_throttle_cfg cfg = {0};
 
-    ret = ReadCfg(&cfg);
+    ret = ReadCfg(&cfg, isIngress);
     if (ret != EXIT_OK) {
         return ret;
     }
@@ -1160,7 +1313,7 @@ static int SetBandwidth(void *cgrpPath, void *args)
         cfg.low_rate = lowtemp;
         cfg.high_rate = hightemp;
 
-        ret = UpdateCfg(&cfg);
+        ret = UpdateCfg(&cfg, isIngress);
         if (ret != EXIT_OK) {
             return ret;
         }
@@ -1168,12 +1321,13 @@ static int SetBandwidth(void *cgrpPath, void *args)
     BWM_LOG_INFO("set bandwidth success\n");
     return EXIT_OK;
 }
-static int GetWaterline(void *unused)
+
+static int GetWaterline(void *unused, int isIngress)
 {
     int ret;
     struct edt_throttle_cfg cfg = {0};
 
-    ret = ReadCfg(&cfg);
+    ret = ReadCfg(&cfg, isIngress);
     if (ret != EXIT_OK) {
         return ret;
     }
@@ -1181,13 +1335,14 @@ static int GetWaterline(void *unused)
     BWM_LOG_INFO("waterline is %llu(B)\n", wl);
     return EXIT_OK;
 }
-static int SetWaterline(void *cgrpPath, void *args)
+
+static int SetWaterline(void *cgrpPath, void *args, int isIngress)
 {
     int ret;
     long long val, tmp;
     struct edt_throttle_cfg cfg = {0};
 
-    ret = ReadCfg(&cfg);
+    ret = ReadCfg(&cfg, isIngress);
     if (ret != EXIT_OK) {
         return ret;
     }
@@ -1207,7 +1362,7 @@ static int SetWaterline(void *cgrpPath, void *args)
 
     if ((unsigned long long)val != cfg.water_line) {
         cfg.water_line = (unsigned long long)val;
-        ret = UpdateCfg(&cfg);
+        ret = UpdateCfg(&cfg, isIngress);
         if (ret != EXIT_OK) {
             return ret;
         }
@@ -1215,12 +1370,13 @@ static int SetWaterline(void *cgrpPath, void *args)
     BWM_LOG_INFO("set waterline success\n");
     return EXIT_OK;
 }
-static int GetStats(void *unused)
+
+static int GetStats(void *unused, int isIngress)
 {
     int ret;
     struct edt_throttle stats = {0};
 
-    ret = ReadStats(&stats);
+    ret = ReadStats(&stats, isIngress);
     if (ret != EXIT_OK) {
         return ret;
     }
@@ -1230,9 +1386,9 @@ static int GetStats(void *unused)
     return EXIT_OK;
 }
 
-static int GetDevs(void *unused)
+static int GetDevs(void *unused, int isIngress)
 {
-    PrintDevsStats();
+    PrintDevsStats(isIngress);
     return EXIT_OK;
 }
 
@@ -1240,17 +1396,18 @@ int main(int argc, char **argv)
 {
     int hasOptions = 0;
     int ret;
-    int opt, isSet, enable;
+    int opt, isSet, enable, isIngress;
     int longindex = 0;
     if (argc < MINUM_ARGS) {
         Usage(argv);
         return EXIT_FAIL_OPTION;
     }
 
-    while ((opt = getopt_long(argc, argv, "vVhe::d::p:s:", g_longOptions, &longindex)) != -1) {
+    while ((opt = getopt_long(argc, argv, "vVhe::E::d::D::p:P:s:S:A:R:", g_longOptions, &longindex)) != -1) {
         hasOptions = 1;
         isSet = 1;
         enable = 1;
+        isIngress = 0; // 0 -> egress; !0 -> ingress
         ret = EXIT_FAIL_OPTION;
 
         switch (opt) {
@@ -1262,16 +1419,48 @@ int main(int argc, char **argv)
                 isSet = 0;
             //lint -fallthrough
             case 's':
-                ret = CfgsInfo(argc, argv, isSet);
+                ret = CfgsInfo(argc, argv, isSet, isIngress);
                 if (ret != EXIT_OK) {
                     return ret;
                 }
                 break;
-            case 'd':
+            case 'P':
+                isSet = 0;
+            //lint -fallthrough
+            case 'S':
+                isIngress = 1;
+                ret = CfgsInfo(argc, argv, isSet, isIngress);
+                if (ret != EXIT_OK) {
+                    return ret;
+                }
+                break;
+            case 'd': // egress
                 enable = 0;
             //lint -fallthrough
             case 'e':
-                ret = ChangeNetdeviceStatus(argc, argv, enable);
+                ret = ChangeNetdeviceStatus(argc, argv, enable, isIngress);
+                if (ret != EXIT_OK) {
+                    return ret;
+                }
+                break;
+            case 'D': // ingress
+                enable = 0;
+            //lint -fallthrough
+            case 'E':
+                isIngress = 1;
+                ret = ChangeNetdeviceStatus(argc, argv, enable, isIngress);
+                if (ret != EXIT_OK) {
+                    return ret;
+                }
+                break;
+            case 'A':
+                ret = UpdateIp(0);
+                if (ret != EXIT_OK) {
+                    return ret;
+                }
+                break;
+            case 'R':
+                ret = UpdateIp(1);
                 if (ret != EXIT_OK) {
                     return ret;
                 }
