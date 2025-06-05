@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qostest
+  namespace: default
+  labels:
+    app: qostest
+spec:
+  replicas: 10
+  selector:
+    matchLabels:
+      app: qostest
+  template:
+    metadata:
+      labels:
+        app: qostest
+      annotations:
+        oncn-bwm.openeuler.org/egress-bandwidth: '{"request":"600Mb","limit":"800Mb","priority":"1"}'
+        oncn-bwm.openeuler.org/ingress-bandwidth: '{"request":"600Mb","limit":"800Mb","priority":"1"}'
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:latest
+          ports:
+            - containerPort: 80

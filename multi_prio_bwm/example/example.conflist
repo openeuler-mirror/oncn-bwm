@@ -1,0 +1,27 @@
+{
+    "name": "generic-veth",
+    "cniVersion": "1.0.0",
+    "plugins": [
+        {
+            "type": "calico",
+            "datastore_type": "kubernetes",
+            "nodename": "__KUBERNETES_NODE_NAME__",
+            "mtu": 1500,
+            "ipam": {
+                "type": "calico-ipam"
+            },
+            "container_settings": {
+                "allow_ip_forwarding": true
+            },
+            "kubernetes": {
+                "kubeconfig": "/etc/cni/net.d/calico-kubeconfig"
+            },
+        },
+        {
+            "name": "bwm-cni",
+            "log_level": "debug",
+            "type": "bwm-cni",
+            "cniVersion": "1.0.0"
+        }
+    ]
+}
