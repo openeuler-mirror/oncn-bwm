@@ -1,0 +1,131 @@
+syntax = "proto3";   //使用proto3
+package rpc;            //包名
+option go_package = "./;daemon_rpc";   //指定生成代码文件位置及包名
+
+service NetQosRpc {
+  rpc SetQos(SetQosRequest) returns (SetQosReply) {
+  }
+  rpc UnSetQos(UnSetQosRequest) returns (UnSetQosReply) {
+  }
+  rpc SetFlow(QosFlow) returns (SetFlowReply){
+  }
+  rpc UnSetFlow(QosFlow) returns (UnSetFlowReply){
+  }
+  rpc ListQosFlow(EmptyRequest) returns (QosFlows){
+  }
+  rpc ListQosPodInfo(EmptyRequest) returns (PodInfos){
+  }
+}
+
+message SetQosRequest {
+  string  K8sPodName = 1;
+  string  K8sPodNamespace = 2;
+  string  VethIpv4 = 3;
+  string  VethIpv6 = 4;
+  string  hostMac = 5;
+  int32   vethHostIdx = 6;
+  string  vethLXCMac = 7;
+  string  vethHostName = 8;
+  string  vethLXCName = 9;
+  string  ContainerId = 10;
+  string  Netns = 11;
+}
+
+message SetQosReply {
+  bool Success = 1;
+  string FailReason = 2;
+  uint32 LocalId = 3;
+}
+
+message UnSetQosRequest {
+  string  K8sPodName = 1;
+  string  K8sPodNamespace = 2;
+  string  VethIpv4 = 3;
+  string  VethIpv6 = 4;
+  string  hostMac = 5;
+  int32   vethHostIdx = 6;
+  string  vethLXCMac = 7;
+  string  vethHostName = 8;
+  string  vethLXCName = 9;
+  string  ContainerId = 10;
+  string  Netns = 11;
+}
+
+message UnSetQosReply {
+  bool Success = 1;
+  string FailReason = 2;
+  uint32 LocalId = 3;
+}
+
+message SetFlowRequest {
+  string  Direct = 1;
+  string  Ip = 2;
+  uint32  Port = 3;
+  uint64  SendBandWidthRequestM = 4;
+  uint64  SendBandWidthLimitM = 5;
+  uint32  SendPriority = 6;
+  uint64  RecvBandWidthRequestM = 7;
+  uint64  RecvBandWidthLimitM = 8;
+  uint32  RecvPriority = 9;
+}
+
+message SetFlowReply {
+  bool Success = 1;
+  string FailReason = 2;
+  uint32 LocalId = 3;
+}
+
+message UnSetFlowRequest {
+  string  Direct = 1;
+  string  Ip = 2;
+  uint32  Port = 3;
+  uint64  SendBandWidthRequestM = 4;
+  uint64  SendBandWidthLimitM = 5;
+  uint32  SendPriority = 6;
+  uint64  RecvBandWidthRequestM = 7;
+  uint64  RecvBandWidthLimitM = 8;
+  uint32  RecvPriority = 9;
+}
+
+message UnSetFlowReply {
+  bool Success = 1;
+  string FailReason = 2;
+  uint32 LocalId = 3;
+}
+
+message EmptyRequest {
+}
+
+message QosFlow {
+  string  Direct = 1;
+  string  Ip = 2;
+  uint32  Port = 3;
+  uint32  LocalId = 4;
+  uint64  SendBandWidthRequestM = 5;
+  uint64  SendBandWidthLimitM = 6;
+  uint32  SendPriority = 7;
+  uint64  RecvBandWidthRequestM = 8;
+  uint64  RecvBandWidthLimitM = 9;
+  uint32  RecvPriority = 10;
+}
+
+message QosFlows {
+  repeated QosFlow qosFlows = 1;
+}
+
+message PodInfo {
+  string  K8sPodName = 1;
+  string  K8sPodNamespace = 2;
+  string  ContainerId = 3;
+  uint32  LocalId = 4;
+  uint64  SendBandWidthRequestM = 5;
+  uint64  SendBandWidthLimitM = 6;
+  uint32  SendPriority = 7;
+  uint64  RecvBandWidthRequestM = 8;
+  uint64  RecvBandWidthLimitM = 9;
+  uint32  RecvPriority = 10;
+}
+
+message PodInfos {
+  repeated PodInfo podInfos = 1;
+}
