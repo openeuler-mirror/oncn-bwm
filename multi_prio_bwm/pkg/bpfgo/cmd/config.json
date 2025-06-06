@@ -1,0 +1,26 @@
+[
+    {
+        "id": 3000,
+        "uid": "b9452088efc20f9a0548b78805a800fb57fbba01f2df5cc84f7feec5969ca124",
+        "prio":2,
+        "bw": 600
+    },
+    {
+        "id": 3001,
+        "uid": "869effcc1385f62efb7ad72a9a80207470951025071f44163f536b6fc20dd439",
+        "prio":0,
+        "bw": 50
+    },
+    {
+        "id": 3002,
+        "uid": "1199bc9e274351fad78e8dd716db1ec108eddc04153f01c413699986b9d82484",
+        "prio":0,
+        "bw": 50
+    },
+    {
+        "id": 3003,
+        "uid": "c674549988386cbcaa0c44ef36422e6f650b9ed6e9b3a47954d1e3ba0aab5398",
+        "prio":0,
+        "bw": 0
+    }
+]
