@@ -1,0 +1,141 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: oncn-bwm-daemonset
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      name: oncn-bwm-daemonset
+  template:
+    metadata:
+      labels:
+        name: oncn-bwm-daemonset
+    spec:
+      initContainers:
+        - name: init-container
+          image: "bwm:f66df35"
+          command: [ "/bin/bash", "-c", "/usr/share/bwm/installcni.sh" ]
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+            - mountPath: /host/opt/cni/bin
+              name: cni-bin-dir
+          securityContext:
+            privileged: true
+      containers:
+        - name: oncn-bwm-daemonset
+          image: "bwm:f66df35"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: HostNICSpeed
+              value: "1000"
+          command: ["/bin/sh", "-c"]
+          args: ["bwm-daemon"]
+          #args: ["sleep 30000000"]
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - mountPath: /sys/fs/cgroup
+              name: sys-fs-cgroup
+            - mountPath: /usr/local/bwm
+              name: usr-local-bwm
+            - mountPath: /sys/fs/bpf
+              name: sys-fs-bpf
+            - mountPath: /host/etc/cni/net.d
+              name: cni-net-dir
+            - mountPath: /var/run/bwm
+              name: qossocketpath
+        - name: alg-daemon
+          image: "bwm:f66df35"
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args: ["alg-daemon"]
+          env:
+            - name: HostNICSpeed
+              value: "1000"
+            - name: DefaultFlowBwPercent
+              value: "10"
+            - name: BwAdjustInterval
+              value: "50"
+            - name: MinBandwidth
+              value: "10"
+            - name: BwAdjustPace
+              value: "10"
+            - name: BwReferRatio
+              value: "0.7"
+          volumeMounts:
+            - mountPath: /sys/fs/cgroup
+              name: sys-fs-cgroup
+            - mountPath: /sys/fs/bpf
+              name: sys-fs-bpf
+          securityContext:
+            privileged: true
+      dnsPolicy: ClusterFirst
+      hostNetwork: true
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      serviceAccount: oncn-bwm-daemonset
+      serviceAccountName: oncn-bwm-daemonset
+      terminationGracePeriodSeconds: 30
+      volumes:
+        - hostPath:
+            path: /sys/fs/cgroup
+            type: ""
+          name: sys-fs-cgroup
+        - hostPath:
+            path: /usr/local/bwm
+            type: ""
+          name: usr-local-bwm
+        - hostPath:
+            path: /sys/fs/bpf
+            type: ""
+          name: sys-fs-bpf
+        - hostPath:
+            path: /opt/cni/bin
+            type: ""
+          name: cni-bin-dir
+        - hostPath:
+            path: /etc/cni/net.d
+            type: ""
+          name: cni-net-dir
+        - hostPath:
+            path: /var/run/bwm
+            type: ""
+          name: qossocketpath
+  updateStrategy:
+    rollingUpdate:
+      maxUnavailable: 1
+    type: RollingUpdate
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: oncn-bwm-daemonset
+  namespace: default
+---
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: oncn-bwm-daemonset
+subjects:
+  - kind: ServiceAccount
+    name: oncn-bwm-daemonset
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: oncn-bwm-daemonset
+  apiGroup: rbac.authorization.k8s.io
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: oncn-bwm-daemonset
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "patch", "watch"]

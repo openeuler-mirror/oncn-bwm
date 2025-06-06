@@ -2,9 +2,10 @@
 
 ## all: make everything
 .PHONY: all
-all: generate bin
+all: generate bin image update-yaml
 
 GIT_COMMIT := $(shell git rev-parse --short HEAD)
+IMAGE_NAME := bwm
 
 TARGET = bwmctl bwm-cni bwm-daemon alg-daemon
 
@@ -56,6 +57,11 @@ bwm-daemon:
 alg-daemon:
 		GOOS=linux GOARCH=$(PLATFORMS) go build -mod=vendor -tags=$(CUSTOM) -o $(CURDIR)/bin/$@ -ldflags "-X 'oncn-bwm/pkg/tc.Custom=$(CUSTOM)'" $(CURDIR)/$(ALG_DAEMON_DIR)/main.go
 
+## image: Build image for oncn-bwm.
+.PHONY: image
+image: $(TARGET)
+		docker build --build-arg TARGETARCH=$(PLATFORMS) -t $(IMAGE_NAME):$(GIT_COMMIT) . -f=build/Dockerfile
+
 ## bin: Build all binary.
 .PHONY: bin
 bin: $(TARGET)
@@ -71,6 +77,11 @@ generate:
 		-mv vendor vendor-bak
 		go generate pkg/bpfgo/gen.go
 		mv vendor-bak vendor
+
+## update-yaml: update install/kubernetes/oncn-bwm.yaml.
+.PHONY: update-yaml
+update-yaml:
+		sed -i 's|image: ".*"|image: "$(IMAGE_NAME):$(GIT_COMMIT)"|' $(K8S_YAML_FILE)
 
 ## clean: Remove all files that are created by building.
 .PHONY: clean
