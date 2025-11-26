@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: egress-iperf3-server-deployment
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: egress-iperf3-server
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/proxyImage: "istio/proxyv2:1.15.3"
+        status.sidecar.istio.io/port: "0"
+        proxy.istio.io/config: "{concurrency: 48}"
+        sidecar.istio.io/proxyCPU: "1m"
+        sidecar.istio.io/proxyiMemory: "1Mi"
+      labels:
+        app: egress-iperf3-server
+        #annotations:
+        #  oncn-bwm.openeuler.org/egress-bandwidth: '{"request":"600Mb","limit":"800Mb","priority":"1"}'
+        #  oncn-bwm.openeuler.org/ingress-bandwidth: '{"request":"600Mb","limit":"800Mb","priority":"1"}'
+    spec:
+      nodeSelector:
+        #kubernetes.io/hostname: oe-2303-2
+        kubernetes.io/hostname: k8s-node-01
+      containers:
+        - name: egress-iperf3-server
+          image: docker.io/networkstatic/iperf3
+          imagePullPolicy: IfNotPresent
+          command: ["iperf3", "-s"]
+          ports:
+            - containerPort: 5001
+          resources:
+            #limits:
+            #cpu: 100m
+            #memory: 32Mi
+            requests:
+              cpu: 500m
+              memory: 128Mi
+
