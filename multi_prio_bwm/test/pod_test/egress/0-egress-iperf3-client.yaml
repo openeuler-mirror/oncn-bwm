@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: 0-egress-iperf3-client-deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: 0-egress-iperf3-client
+  template:
+    metadata:
+      labels:
+        app: 0-egress-iperf3-client
+        #      annotations:
+        #        oncn-bwm.openeuler.org/egress-bandwidth: '{"request":"10mb","limit":"1000Mb","priority":"0"}'
+        #        oncn-bwm.openeuler.org/ingress-bandwidth: '{"request":"10mb","limit":"1000Mb","priority":"0"}'
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: k8s-master
+        #kubernetes.io/hostname: localhost.localdomain
+      containers:
+        - name: egress-iperf3-client
+          image: docker.io/networkstatic/iperf3
+          imagePullPolicy: IfNotPresent
+          command: ["iperf3", "-s"]
+          ports:
+            - containerPort: 5001
+          resources:
+            #limits:
+            #cpu: 100m
+            #memory: 32Mi
+            requests:
+              cpu: 500m
+              memory: 128Mi
+
