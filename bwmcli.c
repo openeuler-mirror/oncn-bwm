@@ -246,38 +246,51 @@ static int BreakArgs(char *s, char *arg1, char *arg2, unsigned long arg1Len, uns
 
 static int ProgLoad(char *prog, struct bpf_object ** obj, int * bpfprogFd)
 {
-    struct bpf_prog_load_attr progLoadAttr = {
-        .prog_type = BPF_PROG_TYPE_CGROUP_SKB,
-        .file = prog,
-        .expected_attach_type = BPF_CGROUP_INET_EGRESS,
-        .ifindex = 0,
-        .log_level = 0,
-    };
     int mapFd;
     struct bpf_map *map = NULL;
+    struct bpf_program *program = NULL;
 
     if (access(prog, O_RDONLY) < 0) {
         BWM_LOG_ERR("Error accessing file %s\n", prog);
         return -1;
     }
-    if (bpf_prog_load_xattr(&progLoadAttr, &(*obj), bpfprogFd)) {
-        BWM_LOG_ERR("ERROR: bpf_prog_load_xattr failed for: %s. errno:%d\n", prog, errno);
+
+    *obj = bpf_object__open(prog);
+    if (libbpf_get_error(*obj)) {
+        BWM_LOG_ERR("ERROR: bpf_object__open failed for: %s. errno:%d\n", prog, errno);
         return -1;
     }
 
+    program = bpf_object__next_program(*obj, NULL);
+    if (!program) {
+        BWM_LOG_ERR("ERROR: bpf_object__next_program failed for: %s. errno:%d\n", prog, errno);
+        goto err;
+    }
+    bpf_program__set_type(program, BPF_PROG_TYPE_CGROUP_SKB);
+    if (bpf_object__load(*obj)) {
+        BWM_LOG_ERR("ERROR: bpf_object__load failed for: %s. errno:%d\n", prog, errno);
+        goto err;
+    }
+    *bpfprogFd = bpf_program__fd(program);
+    if (*bpfprogFd < 0) {
+        BWM_LOG_ERR("Failed to get program fd. errno:%d\n", errno);
+        goto err;
+    }
     map = bpf_object__find_map_by_name(*obj, "cgrp_prio");
     if (!map) {
         BWM_LOG_ERR("Failed to load map cgrp_prio from bpf prog. errno:%d\n", errno);
-        return -1;
+        goto err;
     }
 
     mapFd = bpf_map__fd(map);
     if (mapFd < 0) {
         BWM_LOG_ERR("Map not found: %d. errno:%d\n", mapFd, errno);
-        return -1;
+        goto err;
     }
 
     return mapFd;
+err:
+    return -1;
 }
 
 static int GetMapFdByProgId(__u32 progId)

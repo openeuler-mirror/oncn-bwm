@@ -20,13 +20,13 @@
 
 #define DEFAULT_CGP_PRIO 0
 
-struct bpf_map_def cgrp_prio SEC("maps")  = {
-	.type = BPF_MAP_TYPE_ARRAY,
-	.key_size = sizeof(unsigned int),
-	.value_size = sizeof(unsigned int),
-	.max_entries = 1,
-	.map_flags = 0,
-};
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__type(key, unsigned int);
+	__type(value, unsigned int);
+	__uint(max_entries, 1);
+	__uint(map_flags, 0);
+} cgrp_prio SEC(".maps");
 
 SEC("cgroup_skb/egress")
 int _bwm_out_cg(struct __sk_buff *skb)
