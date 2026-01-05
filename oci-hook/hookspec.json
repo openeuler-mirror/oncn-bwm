@@ -1,0 +1,18 @@
+{
+    "prestart": [
+	    {
+            "path": "/var/lib/docker/hooks/hooktest.sh",
+            "args": ["hooktest.sh"],
+            "env": []
+        }
+    ],
+     "poststart":[
+     ],
+     "poststop": [
+        {
+            "path": "/var/lib/docker/hooks/hookpost.sh",
+            "args": ["hookpost.sh"],
+            "env": []
+        }
+     ]
+}
