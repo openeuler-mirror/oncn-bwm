@@ -7,10 +7,6 @@
 # Usage: This script is triggered automatically by OCI hooks
 ###############################################################################
 
-# === 配置常量 ===
-readonly LOG_FILE="/var/log/my-oci-hook.log"
-readonly JSON_FILE="/tmp/pod_ip_map.json"
-
 source /var/lib/docker/hooks/libhook.sh
 set -x
 
@@ -59,13 +55,13 @@ main() {
     # if [[ "$bw_enabled" == "true" ]]; then
         local veth_host pod_ip
         
-	read -r pod_ip <<< "$(manage_ip_mapping "$container_id" "" "read" "$JSON_FILE")"
+	pod_ip=$(manage_ip_mapping "$container_id" "" "read" "$IP_JSON_FILE" 2>&1 | tail -1)
 	log_info "pod_ip:$pod_ip"
 	# 执行BWM操作
         if execute_bwm_delete_operationsss "" "$pod_ip" "" "" ""; then
             # 清理IP映射
             log_info "BWM end -2"
-	    manage_ip_mapping "$container_id" "$pod_ip" "delete" "$JSON_FILE"
+	    manage_ip_mapping "$container_id" "$pod_ip" "delete" "$IP_JSON_FILE"
             log_info "BWM operations completed successfully"
         else
             log_error "BWM operations failed"

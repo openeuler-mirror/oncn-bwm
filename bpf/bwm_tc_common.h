@@ -107,4 +107,25 @@ static inline void throttle_init(const struct edt_throttle_cfg *cfg,
 	throttle->t_start = 0;
 }
 
+struct iphdr * getiphdr(struct __sk_buff *skb)
+{
+ 	// skb->remote_ip4 is not visiable to tc, we need parse dest_ip from skb handly
+ 	// https://github1s.com/libbpf/libbpf-bootstrap/blob/HEAD/examples/c/tc.bpf.c#L12
+ 	void *data_end = (void *)(__u64)skb->data_end;
+ 	void *data = (void *)(__u64)skb->data;
+ 	struct ethhdr *l2;
+ 	struct iphdr *l3;
+ 	 
+ 	if (skb->protocol != bpf_htons(ETH_P_IP))
+ 	 	return NULL;
+ 	l2 = data;
+ 	if ((void *)(l2 + 1) > data_end)
+ 	 	return NULL;
+ 	 
+ 	l3 = (struct iphdr *)(l2 + 1);
+ 	if ((void *)(l3 + 1) > data_end)
+ 	 	return NULL;
+ 	return l3;
+}
+
 #endif

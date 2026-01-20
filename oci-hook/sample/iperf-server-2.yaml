@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: iperf-server-2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: iperf-server-2
+  template:
+    metadata:
+      labels:
+        app: iperf-server-2
+      annotations:
+        cni.bwm-plugin.com/enable-feature: "true"
+        cni.bwm-plugin.com/bandwidth-ingress: "20mb,800mb"
+        cni.bwm-plugin.com/bandwidth-egress: "20mb,400mb"
+
+    spec:
+      containers:
+      - name: iperf-server-2
+        image: networkstatic/iperf3
+        imagePullPolicy: Never
+        args: ["-s"]
+        ports:
+        - containerPort: 5201
+      tolerations:
+      - key: "node.kubernetes.io/not-ready"
+        operator: "Exists"
+        effect: "NoSchedule"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: iperf-server-2
+spec:
+  selector:
+    app: iperf-server-2
+  ports:
+    - protocol: TCP
+      port: 5201
+      targetPort: 5201
+  type: ClusterIP
+

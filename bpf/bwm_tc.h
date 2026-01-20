@@ -7,10 +7,13 @@
 
 #define THROTTLE_MAP_PATH 	"/sys/fs/bpf/tc/globals/throttle_map"
 #define THROTTLE_CFG_PATH 	"/sys/fs/bpf/tc/globals/throttle_cfg"
+#define IPS_MAP_PATH 	"/sys/fs/bpf/tc/globals/ips_cfg_map"
+#define IPS_THRO_MAP_PATH 	"/sys/fs/bpf/tc/globals/ips_throttle_map"
 
 #define THROTTLE_I_MAP_PATH 	"/sys/fs/bpf/tc/globals/throttle_i_map"
 #define THROTTLE_I_CFG_PATH 	"/sys/fs/bpf/tc/globals/throttle_i_cfg"
-#define IPS_I_MAP_PATH 	"/sys/fs/bpf/tc/globals/ips_i_map"
+#define IPS_I_MAP_PATH 	"/sys/fs/bpf/tc/globals/ips_i_cfg_map"
+#define IPS_I_THRO_MAP_PATH 	"/sys/fs/bpf/tc/globals/ips_throttle_i_map"
 
 #undef NSEC_PER_SEC
 #undef NSEC_PER_MSEC
