@@ -31,16 +31,17 @@ main() {
     log_info "OCI Hook main ----------------------------------------------------------------
     Container $container_id (PID: $pid) bw_enabled:$bw_enabled ingress_bw:$ingress_bw egress_bw:$egress_bw veth_host:$veth_host pod_ip:$pod_ip POD_ID:$POD_ID cgroup_path:$full_path"
 
-    if [[ "$bw_enabled" == "true" ]] && [[ "$pod_ip" == "null" ]]; then
-        log_info "pause container"
-        update_json "$BAND_JSON_FILE" "$POD_ID" "$egress_bw" "$ingress_bw"
-    elif [[ "$pod_ip" != "null" ]] && jq --arg key "$POD_ID" 'has($key)' "$BAND_JSON_FILE" 2>/dev/null | grep -q "true"; then
+    if [[ "$bw_enabled" != "null" ]] && [[ "$pod_ip" == "null" ]]; then
+        log_info "pause container update_json"
+        update_json "$BAND_JSON_FILE" "$POD_ID" "$egress_bw" "$ingress_bw" "$bw_enabled"
+    elif [[ "$pod_ip" != "null" ]] && [[ $(jq -r --arg key "$POD_ID" '.[$key].bw_enabled // empty' "$BAND_JSON_FILE") == "false" ]]; then
+        log_info "pod container POD_ID:$POD_ID    execute_bwm_eth"
+        execute_bwm_eth "$veth_host" "$pid"
+    elif [[ "$pod_ip" != "null" ]] && [[ $(jq -r --arg key "$POD_ID" '.[$key].bw_enabled // empty' "$BAND_JSON_FILE") == "true" ]]; then
         log_info "pod container POD_ID:$POD_ID"
         egress_bw=$(jq -r --arg key "$POD_ID" '.[$key].egress // empty' "$BAND_JSON_FILE")
         ingress_bw=$(jq -r --arg key "$POD_ID" '.[$key].ingress // empty' "$BAND_JSON_FILE")
-
         log_info "egress=$egress_bw ingress=$ingress_bw"
-
         if execute_bwm_operations "$veth_host" "$pod_ip" "$pid" "$ingress_bw" "$egress_bw"; then
             if [ -n "$container_id" ] && [ -n "$pod_ip" ]; then
                     manage_ip_mapping "$container_id" "$pod_ip" "add" "$IP_JSON_FILE"

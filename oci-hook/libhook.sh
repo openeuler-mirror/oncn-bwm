@@ -59,9 +59,9 @@ get_container_labels() {
     fi
 
     local bw_enabled ingress_bw egress_bw
-    bw_enabled=$(jq -r '.Config.Labels["annotation.cni.bwm-plugin.com/enable-feature"] // "false"' "$config_path")
-    ingress_bw=$(jq -r '.Config.Labels["annotation.cni.bwm-plugin.com/bandwidth-ingress"] // ""' "$config_path")
-    egress_bw=$(jq -r '.Config.Labels["annotation.cni.bwm-plugin.com/bandwidth-egress"] // ""' "$config_path")
+    bw_enabled=$(jq -r '.Config.Labels["annotation.enable-feature"] // "null"' "$config_path")
+    ingress_bw=$(jq -r '.Config.Labels["annotation.bandwidth-ingress"] // ""' "$config_path")
+    egress_bw=$(jq -r '.Config.Labels["annotation.bandwidth-egress"] // ""' "$config_path")
 
     ingress_bw="${ingress_bw//-/,}"
     egress_bw="${egress_bw//-/,}"
@@ -110,6 +110,7 @@ update_json() {
     local key="$2"
     local egress="$3"
     local ingress="$4"
+    local bw_enabled="$5"
 
     if [ ! -f "$json_file" ]; then
         echo "{}" > "$json_file"
@@ -118,16 +119,23 @@ update_json() {
     jq --arg key "$key" \
        --arg egress "$egress" \
        --arg ingress "$ingress" \
+       --arg bw_enabled "$bw_enabled" \
        'if has($key) then 
-            .[$key].egress = $egress | .[$key].ingress = $ingress 
+            .[$key].egress = $egress | 
+            .[$key].ingress = $ingress |
+            .[$key].bw_enabled = $bw_enabled
         else 
-            .[$key] = { egress: $egress, ingress: $ingress } 
+            .[$key] = { 
+                egress: $egress, 
+                ingress: $ingress, 
+                bw_enabled: $bw_enabled 
+            } 
         end' \
        "$json_file" > "${json_file}.tmp"
 
     mv "${json_file}.tmp" "$json_file"
 
-    echo "write/update: $key -> egress=$egress, ingress=$ingress"
+    echo "write/update: $key -> egress=$egress, ingress=$ingress, bw_enabled=$bw_enabled"
 }
 
 
@@ -250,7 +258,6 @@ manage_ip_mapping() {
     esac
 }
 
-
 execute_bwm_operations() {
     local veth_host="$1" pod_ip="$2" pid="$3" ingress_bw="$4" egress_bw="$5"
 
@@ -308,6 +315,23 @@ execute_bwm_operations() {
         return 1
     fi
     log_info "Executing BWM operations for pid: $pid"
+}
+
+execute_bwm_eth() {
+    local veth_host="$1" pid="$2" 
+    if nsenter -n -t "${pid}" bwmcli -e eth0; then
+        log_info "Successfully executed nsenter-n -t ${pid} bwmcli -e eth0"
+    else
+        log_error "Failed to executed nsenter-n -t ${pid} bwmcli -e eth0"
+        return 1
+    fi
+
+    if bwmcli -E "$veth_host"; then
+        log_info "Successfully executed bwmcli -E $veth_host"
+    else
+        log_error "Failed to execute bwmcli -E $veth_host"
+        return 1
+    fi
 }
 
 execute_bwm_delete_operations() {

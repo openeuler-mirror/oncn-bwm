@@ -14,6 +14,7 @@
 #include "bwm_tc.h"
 #include "bwm_tc_common.h"
 
+
 struct bpf_elf_map_t SEC("maps") throttle_cfg = {
 	.type = BPF_MAP_TYPE_ARRAY,
 	.key_size = sizeof(unsigned int),
@@ -58,6 +59,7 @@ SEC("tc")
 int bwm_tc(struct __sk_buff *skb)
 {
 	struct edt_throttle *throttle = NULL;
+	struct edt_throttle *online_throttle = NULL;
 	struct edt_throttle *ips_throttle = NULL;
 	struct edt_throttle_cfg * cfg = NULL;
 	struct edt_throttle_cfg * ips_cfg = NULL;
@@ -69,13 +71,13 @@ int bwm_tc(struct __sk_buff *skb)
 	if (cfg == NULL)
 		return TC_ACT_OK;
 
-	throttle = bpf_map_lookup_elem(&throttle_map, &map_index);
-	if (throttle == NULL)
+	online_throttle = bpf_map_lookup_elem(&throttle_map, &map_index);
+	if (online_throttle == NULL)
 		return TC_ACT_OK;
-
+	throttle = online_throttle;
 	struct edt_throttle_cfg * cfg_con = cfg;
-	if (throttle->rate == 0)
-		throttle_init(cfg_con, throttle);
+	if (online_throttle->rate == 0)
+		throttle_init(cfg_con, online_throttle);
 
 	priority_index = bpf_skb_cgroup_classid(skb);
 	skb->priority += priority_index;
@@ -100,7 +102,8 @@ int bwm_tc(struct __sk_buff *skb)
 	}
 	else
 		bwm_online(skb_con, throttle);
-	adjust_rate(cfg_con, throttle);
+
+	adjust_rate(cfg_con, online_throttle, throttle);
 
 	bpf_printk("[tc.c]prio=%u\n", skb->priority);
 	return TC_ACT_OK;

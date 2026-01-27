@@ -7,10 +7,10 @@
 
 #include <bpf/bpf_helpers.h>
 
-#ifndef BWM_DEBUG  // Define BWM_DEBUG to enable debugging
-#undef bpf_printk
-#define bpf_printk(fmt, ...)
-#endif
+// #ifndef BWM_DEBUG  // Define BWM_DEBUG to enable debugging
+// #undef bpf_printk
+// #define bpf_printk(fmt, ...)
+// #endif
 
 #define PIN_GLOBAL_NS 2
 #define OFFLINE_PRIO ((unsigned int)-1)
@@ -62,38 +62,42 @@ static inline void bwm_offline(struct __sk_buff *skb, struct edt_throttle *throt
 }
 
 
-static inline void adjust_rate(const struct edt_throttle_cfg *cfg, struct edt_throttle *throttle)
+static inline void adjust_rate(const struct edt_throttle_cfg *cfg, struct edt_throttle *online_throttle, struct edt_throttle *offline_throttle)
 {
 	unsigned long long t_cur;
-	unsigned long long t_past;
-	unsigned long long rate_past;
-	unsigned long long offline_rate_past;
+	unsigned long long offline_t_past, online_t_past;
+	unsigned long long offline_rate_past, online_rate_past;
 
 	// 2. check if need to adjust offline speed
 	t_cur = bpf_ktime_get_ns();
-	t_past = t_cur - throttle->t_start;
-	if (t_past > cfg->interval) {
-		throttle->t_start = t_cur;
-		rate_past = throttle->online_tx_bytes * NSEC_PER_SEC / t_past;
-		offline_rate_past = throttle->tx_bytes * NSEC_PER_SEC / t_past;
+	online_t_past = t_cur - online_throttle->t_start;
+	offline_t_past = t_cur - offline_throttle->t_start;
+	if (offline_t_past > cfg->interval) {
+		online_throttle->t_start = t_cur;
+		offline_throttle->t_start = t_cur;
+		online_rate_past = online_throttle->online_tx_bytes * NSEC_PER_SEC / online_t_past;
+		offline_rate_past = offline_throttle->tx_bytes * NSEC_PER_SEC / offline_t_past;
 
-		if (rate_past >= cfg->water_line) {
-			throttle->rate = cfg->low_rate;
-			__sync_fetch_and_add(&throttle->stats.low_times, 1);
+		if (online_rate_past >= cfg->water_line) {
+			offline_throttle->rate = cfg->low_rate;
+			__sync_fetch_and_add(&offline_throttle->stats.low_times, 1);
 		} else {
-			throttle->rate = cfg->high_rate;
-			__sync_fetch_and_add(&throttle->stats.high_times, 1);
+			offline_throttle->rate = cfg->high_rate;
+			__sync_fetch_and_add(&offline_throttle->stats.high_times, 1);
 		}
 
 		/* we can safety update without lock */
-		if (throttle->t_start == t_cur) {
-			throttle->online_tx_bytes = 0;
-			throttle->tx_bytes = 0;
+		if (offline_throttle->t_start == t_cur) {
+			offline_throttle->tx_bytes = 0;
+		}
+		if (online_throttle->t_start == t_cur) {
+			online_throttle->online_tx_bytes = 0;
 		}
 
-		throttle->stats.rate_past = rate_past;
-		throttle->stats.offline_rate_past = offline_rate_past;
-		__sync_fetch_and_add(&throttle->stats.check_times, 1);
+		online_throttle->stats.rate_past = online_t_past;
+		offline_throttle->stats.rate_past = online_t_past;
+		offline_throttle->stats.offline_rate_past = offline_rate_past;
+		__sync_fetch_and_add(&offline_throttle->stats.check_times, 1);
 	}
 }
 

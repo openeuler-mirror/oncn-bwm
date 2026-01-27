@@ -12,9 +12,9 @@ spec:
       labels:
         app: iperf-server
       annotations:
-        cni.bwm-plugin.com/enable-feature: "true"
-        cni.bwm-plugin.com/bandwidth-ingress: "20mb,300mb"
-        cni.bwm-plugin.com/bandwidth-egress: "20mb,200mb"
+        enable-feature: "false"
+        bandwidth-ingress: "20mb,300mb"
+        bandwidth-egress: "20mb,200mb"
 
     spec:
       containers:

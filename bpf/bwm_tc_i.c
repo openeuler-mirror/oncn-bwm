@@ -58,6 +58,7 @@ SEC("tc")
 int bwm_tc(struct __sk_buff *skb)
 {
 	struct edt_throttle *throttle = NULL;
+	struct edt_throttle *online_throttle = NULL;
 	struct edt_throttle *ips_throttle = NULL;
 	struct edt_throttle_cfg * cfg = NULL;
 	struct edt_throttle_cfg * ips_cfg = NULL;
@@ -69,13 +70,13 @@ int bwm_tc(struct __sk_buff *skb)
 	if (cfg == NULL)
 		return TC_ACT_OK;
 
-	throttle = bpf_map_lookup_elem(&throttle_i_map, &map_index);
-	if (throttle == NULL)
+	online_throttle = bpf_map_lookup_elem(&throttle_i_map, &map_index);
+	if (online_throttle == NULL)
 		return TC_ACT_OK;
-
+	throttle = online_throttle;
 	struct edt_throttle_cfg * cfg_con = cfg;
-	if (throttle->rate == 0)
-		throttle_init(cfg_con, throttle);
+	if (online_throttle->rate == 0)
+		throttle_init(cfg_con, online_throttle);
 
 	struct iphdr *l3 = getiphdr(skb);
 	if (l3 == NULL)
@@ -93,11 +94,12 @@ int bwm_tc(struct __sk_buff *skb)
 			throttle = ips_throttle;
 		}
 		bwm_offline(skb, throttle);
-	} else {
-		// dismatched: online flow
+	}
+	else {
 		bwm_online(skb_con, throttle);
 	}
-	adjust_rate(cfg_con, throttle);
+
+	adjust_rate(cfg_con, online_throttle, throttle);
 
 	bpf_printk("[tc.c]dest_ip=%u\n", ip);
 	return TC_ACT_OK;
