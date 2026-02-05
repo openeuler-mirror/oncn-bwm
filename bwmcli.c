@@ -26,48 +26,36 @@
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 
+// There may be other qdiscs, and no error handling will be performed.
 static struct TcCmd g_enableSeq[] = {
     {
-        .cmdStr = "tc qdisc del dev %s root >/dev/null 2>&1",
-        .verifyRet = false,
-    },
-    {
-        .cmdStr = "tc qdisc del dev %s clsact >/dev/null 2>&1",
-        .verifyRet = false,
-    },
-    {
-        .cmdStr = "tc qdisc add dev %s root fq",
+        .cmdStr = "tc qdisc add dev %s root fq || true",
         .verifyRet = true,
     },
     {
-        .cmdStr = "tc qdisc add dev %s clsact",
+        .cmdStr = "tc qdisc add dev %s clsact || true",
         .verifyRet = true,
     },
     {
-        .cmdStr = "tc filter add dev %s egress bpf direct-action obj " TC_PROG " sec tc >/dev/null 2>&1",
+        .cmdStr = "tc filter add dev %s egress prio 1 bpf direct-action obj " TC_PROG " sec tc >/dev/null 2>&1",
         .verifyRet = true,
     }
 };
 
+// There may be other qdiscs, and no error handling will be performed.
+// This tc egress is not an error. The ingress traffic of BWM is limited by 
+// egress traffic on the peer network interface of the pod veth.
 static struct TcCmd g_enableSeqIngress[] = {
     {
-        .cmdStr = "tc qdisc del dev %s root >/dev/null 2>&1",
-        .verifyRet = false,
-    },
-    {
-        .cmdStr = "tc qdisc del dev %s clsact >/dev/null 2>&1",
-        .verifyRet = false,
-    },
-    {
-        .cmdStr = "tc qdisc add dev %s root fq",
+        .cmdStr = "tc qdisc add dev %s root fq || true",
         .verifyRet = true,
     },
     {
-        .cmdStr = "tc qdisc add dev %s clsact",
+        .cmdStr = "tc qdisc add dev %s clsact || true",
         .verifyRet = true,
     },
     {
-        .cmdStr = "tc filter add dev %s egress bpf direct-action obj " TC_PROG_I " sec tc >/dev/null 2>&1",
+        .cmdStr = "tc filter add dev %s egress prio 1 bpf direct-action obj " TC_PROG_I " sec tc >/dev/null 2>&1",
         .verifyRet = true,
     }
 };

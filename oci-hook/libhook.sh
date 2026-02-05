@@ -96,8 +96,10 @@ get_network_info() {
 extract_pod_id() {
     local path="$1"
 
-    if [[ "$path" =~ /kubepods/(burstable|besteffort)/pod([^/]+) ]]; then
-        echo "pod${BASH_REMATCH[2]}"
+    if [[ "$path" =~ /kubepods.*pod([^/._]+)[._] ]]; then
+        local pod_id="${BASH_REMATCH[1]}"
+        pod_id="${pod_id//_/-}"
+        echo "pod$pod_id"
         return 0
     fi
 
@@ -270,13 +272,6 @@ execute_bwm_operations() {
         return 1
     fi
 
-    if bwmcli -s bandwidth "$egress_bw"; then
-        log_info "Successfully executed bwmcli -s bandwidth $egress_bw"
-    else
-        log_error "Failed to execute bwmcli -s bandwidth $egress_bw"
-        return 1
-    fi
-
     cgroup_path=$(grep "net_cls,net_prio" "/proc/$pid/cgroup" | awk -F':' '{print $3}')
     full_path="/sys/fs/cgroup/net_cls${cgroup_path}"
 
@@ -308,12 +303,6 @@ execute_bwm_operations() {
         return 1
     fi
 
-    if bwmcli -S bandwidth "$ingress_bw"; then
-        log_info "Successfully executed bwmcli -S bandwidth $ingress_bw"
-    else
-        log_error "Failed to execute bwmcli -S bandwidth $ingress_bw"
-        return 1
-    fi
     log_info "Executing BWM operations for pid: $pid"
 }
 

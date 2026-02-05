@@ -84,7 +84,7 @@ int bwm_tc(struct __sk_buff *skb)
 
 	const struct __sk_buff *skb_con = skb;
 	/* online, we should be careful of SO_PRIORITY option. */
-	if (skb->priority != OFFLINE_PRIO){
+	if (skb->priority == OFFLINE_PRIO){
 		struct iphdr *l3 = getiphdr(skb);
 			if (l3 == NULL)
 				return TC_ACT_OK;
