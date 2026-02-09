@@ -52,6 +52,17 @@ main() {
             log_error "BWM operations failed"
         fi
     fi
+
+    local pod_id_key
+    pod_id_key=$(get_pod_id_from_config "$container_id")
+
+    if [[ -n "$pod_id_key" ]]; then
+        export FORCE=true 
+        delete_from_json "$BAND_JSON_FILE" "$pod_id_key"
+        log_info "Cleaned up bandwidth config for $pod_id_key"
+    else
+        log_info "Skip pod_band.json cleanup: Pod UID not found in config"
+    fi
 }
 
 {

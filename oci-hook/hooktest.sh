@@ -24,12 +24,10 @@ main() {
     local veth_host pod_ip
     read -r veth_host pod_ip <<< "$(get_network_info "$pid")"
 
-    cgroup_path=$(grep "net_cls,net_prio" "/proc/$pid/cgroup" | awk -F':' '{print $3}')
-    full_path="/sys/fs/cgroup/net_cls${cgroup_path}"
-    POD_ID=$(extract_pod_id "$full_path")
+    POD_ID=$(get_pod_id_from_config "$container_id")
 
     log_info "OCI Hook main ----------------------------------------------------------------
-    Container $container_id (PID: $pid) bw_enabled:$bw_enabled ingress_bw:$ingress_bw egress_bw:$egress_bw veth_host:$veth_host pod_ip:$pod_ip POD_ID:$POD_ID cgroup_path:$full_path"
+    Container $container_id (PID: $pid) bw_enabled:$bw_enabled ingress_bw:$ingress_bw egress_bw:$egress_bw veth_host:$veth_host pod_ip:$pod_ip POD_ID:$POD_ID"
 
     if [[ "$bw_enabled" != "null" ]] && [[ "$pod_ip" == "null" ]]; then
         log_info "pause container update_json"

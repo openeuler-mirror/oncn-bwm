@@ -140,6 +140,23 @@ update_json() {
     echo "write/update: $key -> egress=$egress, ingress=$ingress, bw_enabled=$bw_enabled"
 }
 
+get_pod_id_from_config() {
+    local container_id="$1"
+    local config_path="/var/lib/docker/containers/$container_id/config.v2.json"
+    
+    if [[ ! -f "$config_path" ]]; then
+        return 1
+    fi
+
+    local pod_uid
+    pod_uid=$(jq -r '.Config.Labels["io.kubernetes.pod.uid"] // empty' "$config_path")
+    
+    if [[ -n "$pod_uid" ]]; then
+        echo "pod${pod_uid//_/-}"
+    else
+        echo ""
+    fi
+}
 
 delete_from_json() {
     local json_file="$1"
