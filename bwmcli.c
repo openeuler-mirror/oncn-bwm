@@ -893,10 +893,16 @@ static int BreakMultiArgs(char *args, char arg1[], char arg2[], int mutilArgs)
             return EXIT_FAIL_OPTION;
         }
     } else {
-        if (arg1[0] == '\0' || arg2[0] == '\0') {
-            (void)fprintf(stderr, "invalid option: need 2 args\n");
+        if (arg1[0] == '\0') {
+            (void)fprintf(stderr, "invalid option: need at least 1 arg\n");
             return EXIT_FAIL_OPTION;
         }
+        
+        /* If only one argument is provided, both arg1 and arg2 use the same argument. */
+        if (arg2[0] == '\0') {
+            snprintf(arg2, ARG_LEN + 1, "%s", arg1);
+        }
+
     }
     return EXIT_OK;
 }
