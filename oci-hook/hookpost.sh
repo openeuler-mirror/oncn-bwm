@@ -1,32 +1,5 @@
 #!/bin/bash
-###############################################################################
-# Script: oci_hook_handler.sh
-# Author: [zhangmingyi]
-# Date: 2025-12-29
-# Description: OCI Hook script for handling container network bandwidth management
-# Usage: This script is triggered automatically by OCI hooks
-###############################################################################
-
 source /var/lib/docker/hooks/libhook.sh
-set -x
-
-execute_bwm_delete_operationsss() {
-    local veth_host="$1" pod_ip="$2" pid ="$3" ingress_bw="$4" egress_bw="$5"
-
-    log_info "Executing BWM operations for Pod IP: $pod_ip"
-
-    if bwmcli -r "$pod_ip"; then
-        log_info "Successfully executed bwmcli -r $pod_ip"
-    else
-        log_error "Failed to execute bwmcli -r $pod_ip"
-    fi
-
-    if bwmcli -R "$pod_ip"; then
-        log_info "Successfully executed bwmcli -R $pod_ip"
-    else
-        log_error "Failed to execute bwmcli -R $pod_ip"
-    fi
-}
 
 main() {
     local container_state_json
@@ -35,33 +8,48 @@ main() {
     local pid container_id
     read -r pid container_id <<< "$(get_container_info "$container_state_json")"
 
-    local bw_enabled ingress_bw egress_bw config_path
-    read -r bw_enabled ingress_bw egress_bw config_path <<< "$(get_container_labels "$container_id")"
-    
-    log_info "OCI Hook delete --------------------------------------------------------
-    Container $container_id (PID: $pid) - BWM enabled: $bw_enabled"
+    POD_ID=$(get_pod_id_from_config "$container_id")
+    IS_PAUSE=$(is_sandbox_container "$container_id")
 
-    local veth_host pod_ip
+    log_info "OCI Hook Poststop --- Container:$container_id IS_PAUSE:$IS_PAUSE POD_ID:$POD_ID"
 
-	pod_ip=$(manage_ip_mapping "$container_id" "" "read" "$IP_JSON_FILE")
-    if [[ -n "$pod_ip" ]];then
-        if execute_bwm_delete_operationsss "" "$pod_ip" "" "" ""; then
-            manage_ip_mapping "$container_id" "$pod_ip" "delete" "$IP_JSON_FILE"
-            log_info "BWM operations completed successfully"
-        else
-            log_error "BWM operations failed"
-        fi
+    if [[ -z "$POD_ID" ]]; then
+        log_error "Poststop aborted: Cannot resolve POD_ID for container $container_id."
+        return 0
     fi
 
-    local pod_id_key
-    pod_id_key=$(get_pod_id_from_config "$container_id")
+    # Only perform cleanup if this is the pause container. 
+    # Business containers may stop before the pause container, and we want
+    # to keep BWM rules active until the entire pod is stopped.
+    if [[ "$IS_PAUSE" != "true" ]]; then
+        log_info "Business container stopped. Leaving Pod BWM intact."
+        return 0
+    fi
 
-    if [[ -n "$pod_id_key" ]]; then
-        export FORCE=true 
-        delete_from_json "$BAND_JSON_FILE" "$pod_id_key"
-        log_info "Cleaned up bandwidth config for $pod_id_key"
+    # At this point, we know the pause container is stopping.
+    # which means the entire pod is stopping. We should clean up any BWM
+    # rules and remove the pod's entry from the configuration file.
+    log_info "Pause container stopped. Final cleanup for POD_ID:$POD_ID"
+
+    if [[ -f "$BAND_JSON_FILE" ]]; then
+        local saved_ip applied_state
+        saved_ip=$(jq -r --arg key "$POD_ID" '.[$key].pod_ip // empty' "$BAND_JSON_FILE")
+        applied_state=$(jq -r --arg key "$POD_ID" '.[$key].applied // empty' "$BAND_JSON_FILE")
+
+        if [[ "$applied_state" == "true" ]]; then
+            if [[ -n "$saved_ip" && "$saved_ip" != "null" ]]; then
+                log_info "Deleting eBPF BWM rules for IP: $saved_ip"
+                execute_bwm_delete_operations "" "$saved_ip" "" "" ""
+            else
+                log_error "Inconsistent state: applied is true but pod_ip is missing for POD_ID: $POD_ID"
+            fi
+        fi
     else
-        log_info "Skip pod_band.json cleanup: Pod UID not found in config"
+        log_info "No configuration file found ($BAND_JSON_FILE). Nothing to clean up."
+    fi
+
+    if ! delete_from_json "$BAND_JSON_FILE" "$POD_ID"; then
+        log_error "Failed to remove POD_ID $POD_ID from configuration file."
     fi
 }
 
@@ -69,8 +57,6 @@ main() {
     init
     check_dependencies
     main "$@"
-    log_info "OCI Hook finished successfully"
 } || {
-    log_error "OCI Hook execution failed"
     exit 1
 }

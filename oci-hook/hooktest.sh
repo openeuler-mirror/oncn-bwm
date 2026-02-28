@@ -1,15 +1,5 @@
 #!/bin/bash
-###############################################################################
-# Script: oci_hook_handler.sh
-# Author: [zhangmingyi]
-# Date: 2025-12-29
-# Description: OCI Hook script for handling container network bandwidth management
-# Usage: This script is triggered automatically by OCI hooks
-###############################################################################
-
-
 source /var/lib/docker/hooks/libhook.sh
-set -x
 
 main() {
     local container_state_json
@@ -25,42 +15,83 @@ main() {
     read -r veth_host pod_ip <<< "$(get_network_info "$pid")"
 
     POD_ID=$(get_pod_id_from_config "$container_id")
+    IS_PAUSE=$(is_sandbox_container "$container_id")
 
-    log_info "OCI Hook main ----------------------------------------------------------------
-    Container $container_id (PID: $pid) bw_enabled:$bw_enabled ingress_bw:$ingress_bw egress_bw:$egress_bw veth_host:$veth_host pod_ip:$pod_ip POD_ID:$POD_ID"
+    log_info "OCI Hook Prestart --- Container:$container_id IS_PAUSE:$IS_PAUSE POD_ID:$POD_ID"
 
-    if [[ "$bw_enabled" != "null" ]] && [[ "$pod_ip" == "null" ]]; then
-        log_info "pause container update_json"
-        update_json "$BAND_JSON_FILE" "$POD_ID" "$egress_bw" "$ingress_bw" "$bw_enabled"
-    elif [[ "$pod_ip" != "null" ]] && [[ $(jq -r --arg key "$POD_ID" '.[$key].bw_enabled // empty' "$BAND_JSON_FILE") == "false" ]]; then
-        log_info "pod container POD_ID:$POD_ID    execute_bwm_eth"
-        execute_bwm_eth "$veth_host" "$pid"
-    elif [[ "$pod_ip" != "null" ]] && [[ $(jq -r --arg key "$POD_ID" '.[$key].bw_enabled // empty' "$BAND_JSON_FILE") == "true" ]]; then
-        log_info "pod container POD_ID:$POD_ID"
-        egress_bw=$(jq -r --arg key "$POD_ID" '.[$key].egress // empty' "$BAND_JSON_FILE")
-        ingress_bw=$(jq -r --arg key "$POD_ID" '.[$key].ingress // empty' "$BAND_JSON_FILE")
-        log_info "egress=$egress_bw ingress=$ingress_bw"
-        if execute_bwm_operations "$veth_host" "$pod_ip" "$pid" "$ingress_bw" "$egress_bw"; then
-            if [ -n "$container_id" ] && [ -n "$pod_ip" ]; then
-                    manage_ip_mapping "$container_id" "$pod_ip" "add" "$IP_JSON_FILE"
-            fi
-            log_info "BWM operations completed successfully"
-        else
-            log_error "BWM operations failed"
-            exit 1
+    if [[ -z "$POD_ID" ]]; then
+        log_error "Prestart aborted: Cannot resolve POD_ID for container $container_id."
+        return 0
+    fi
+
+    if [[ "$IS_PAUSE" == "true" ]]; then
+        if [[ "$bw_enabled" != "null" ]]; then
+            log_info "Pause container detected. Initializing pod_band.json (applied=false)..."
+            (
+                flock -x 200
+                if [ ! -f "$BAND_JSON_FILE" ]; then echo "{}" > "$BAND_JSON_FILE"; fi
+                
+                if ! jq --arg key "$POD_ID" --arg eg "$egress_bw" --arg ig "$ingress_bw" --arg bw "$bw_enabled" \
+                   '.[$key] = {egress: $eg, ingress: $ig, bw_enabled: $bw, applied: "false", pod_ip: ""}' \
+                   "$BAND_JSON_FILE" > "${BAND_JSON_FILE}.tmp"; then
+                    log_error "jq error: Failed to parse or write JSON for POD_ID: $POD_ID"
+                    exit 1
+                fi
+                mv "${BAND_JSON_FILE}.tmp" "$BAND_JSON_FILE"
+            ) 200> "$GLOBAL_LOCK_FILE"
         fi
     else
-        log_info "BWM plugin not enabled for this container, skipping operations"
+        if [[ -f "$BAND_JSON_FILE" ]]; then
+            local bw_enabled_state applied_state
+            bw_enabled_state=$(jq -r --arg key "$POD_ID" '.[$key].bw_enabled // empty' "$BAND_JSON_FILE")
+            applied_state=$(jq -r --arg key "$POD_ID" '.[$key].applied // empty' "$BAND_JSON_FILE")
+
+            if [[ -n "$bw_enabled_state" && "$applied_state" == "false" ]]; then
+                if [[ "$pod_ip" == "null" ]]; then
+                    log_error "Business container started but pod_ip is null. Skipping BWM application."
+                    return 0
+                fi
+
+                log_info "First business container (IP: $pod_ip). Applying BWM rules..."
+                local op_success="false"
+                
+                if [[ "$bw_enabled_state" == "false" ]]; then
+                    if execute_bwm_eth "$veth_host" "$pid"; then op_success="true"; fi
+                elif [[ "$bw_enabled_state" == "true" ]]; then
+                    local saved_egress saved_ingress
+                    saved_egress=$(jq -r --arg key "$POD_ID" '.[$key].egress // empty' "$BAND_JSON_FILE")
+                    saved_ingress=$(jq -r --arg key "$POD_ID" '.[$key].ingress // empty' "$BAND_JSON_FILE")
+                    if execute_bwm_operations "$veth_host" "$pod_ip" "$pid" "$saved_ingress" "$saved_egress"; then
+                        op_success="true"
+                    fi
+                fi
+
+                if [[ "$op_success" == "true" ]]; then
+                    (
+                        flock -x 200
+                        if ! jq --arg key "$POD_ID" --arg ip "$pod_ip" '.[$key].applied = "true" | .[$key].pod_ip = $ip' \
+                           "$BAND_JSON_FILE" > "${BAND_JSON_FILE}.tmp"; then
+                            log_error "jq error: Failed to update applied status for POD_ID: $POD_ID"
+                            exit 1
+                        fi
+                        mv "${BAND_JSON_FILE}.tmp" "$BAND_JSON_FILE"
+                    ) 200> "$GLOBAL_LOCK_FILE"
+                    log_info "BWM applied successfully for POD_ID:$POD_ID"
+                else
+                    log_error "BWM operations failed for container $container_id"
+                    exit 1
+                fi
+            elif [[ "$applied_state" == "true" ]]; then
+                log_info "BWM already applied by previous container in this Pod. Skipping."
+            fi
+        fi
     fi
 }
 
 {
     init
     check_dependencies
-    log_info "OCI Hook check_dependencies"
     main "$@"
-    log_info "OCI Hook finished successfully"
 } || {
-    log_error "OCI Hook execution failed"
     exit 1
 }
