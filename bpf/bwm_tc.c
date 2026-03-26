@@ -36,7 +36,7 @@ struct bpf_elf_map_t SEC("maps") throttle_map = {
 };
 
 struct bpf_elf_map_t SEC("maps") ips_cfg_map = {
-	.type = BPF_MAP_TYPE_LRU_HASH,
+	.type = BPF_MAP_TYPE_HASH,
 	.key_size = sizeof(__u32), // ipv4
 	.value_size = sizeof(struct edt_throttle_cfg),
 	.pinning = PIN_GLOBAL_NS,
@@ -46,7 +46,7 @@ struct bpf_elf_map_t SEC("maps") ips_cfg_map = {
 	};
 
 struct bpf_elf_map_t SEC("maps") ips_throttle_map = {
-	.type = BPF_MAP_TYPE_LRU_HASH,
+	.type = BPF_MAP_TYPE_HASH,
 	.key_size = sizeof(unsigned int),
 	.value_size = sizeof(struct edt_throttle),
 	.pinning = PIN_GLOBAL_NS,

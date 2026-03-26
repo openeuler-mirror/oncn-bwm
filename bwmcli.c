@@ -1308,20 +1308,22 @@ static int DelIpBandwidth(__u32 ipUint, int isIngress)
     if (ret != 0) {
         // ENOENT means the key doesn't exist, which is acceptable for idempotent delete
         if (errno != ENOENT) {
-            BWM_LOG_ERR("ERROR: %s map fail. %s ret:%d errno:%d\n",
-                isIngress ? "RemoveIp" : "AddIp", IPS_I_MAP_PATH, ret, errno);
+            BWM_LOG_ERR("ERROR: Remove %s map fail. %s ret:%d errno:%d\n",
+                isIngress ? IPS_I_MAP_PATH : IPS_MAP_PATH, ret, errno);
             (void)close(fd1);
+            (void)close(fd2);
             return EXIT_FAIL_BPF;
         }
-        BWM_LOG_INFO("IP entry not found in %s (idempotent), continue\n", 
+        BWM_LOG_INFO("IP entry not found in %s (idempotent, possibly auto-evicted by LRU), continue\n", 
             isIngress ? IPS_I_MAP_PATH : IPS_MAP_PATH);
     }
     ret = bpf_map_delete_elem(fd2, &ipUint);
     if (ret != 0) {
         // ENOENT means the key doesn't exist, which is acceptable for idempotent delete
         if (errno != ENOENT) {
-            BWM_LOG_ERR("ERROR: %s map fail. %s ret:%d errno:%d\n",
-                isIngress ? "RemoveIp" : "AddIp", IPS_I_THRO_MAP_PATH, ret, errno);
+            BWM_LOG_ERR("ERROR: Remove %s map fail. %s ret:%d errno:%d\n",
+                isIngress ? IPS_I_THRO_MAP_PATH : IPS_THRO_MAP_PATH, ret, errno);
+            (void)close(fd1);
             (void)close(fd2);
             return EXIT_FAIL_BPF;
         }
