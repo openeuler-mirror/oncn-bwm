@@ -37,7 +37,7 @@ static struct TcCmd g_enableSeq[] = {
         .verifyRet = true,
     },
     {
-        .cmdStr = "tc filter add dev %s egress prio 1 bpf direct-action obj " TC_PROG " sec tc >/dev/null 2>&1",
+        .cmdStr = "tc filter add dev %s egress prio " BWM_TC_PRIO " handle " BWM_TC_HANDLE " bpf direct-action obj " TC_PROG " sec tc >/dev/null 2>&1",
         .verifyRet = true,
     }
 };
@@ -55,22 +55,14 @@ static struct TcCmd g_enableSeqIngress[] = {
         .verifyRet = true,
     },
     {
-        .cmdStr = "tc filter add dev %s egress prio 1 bpf direct-action obj " TC_PROG_I " sec tc >/dev/null 2>&1",
+        .cmdStr = "tc filter add dev %s egress prio " BWM_TC_PRIO " handle " BWM_TC_HANDLE " bpf direct-action obj " TC_PROG_I " sec tc >/dev/null 2>&1",
         .verifyRet = true,
     }
 };
 
 static struct TcCmd g_disableSeq[] = {
     {
-        .cmdStr = "tc filter del dev %s egress",
-        .verifyRet = false,
-    },
-    {
-        .cmdStr = "tc qdisc del dev %s clsact",
-        .verifyRet = false,
-    },
-    {
-        .cmdStr = "tc qdisc del dev %s root",
+        .cmdStr = "tc filter del dev %s egress prio " BWM_TC_PRIO " handle " BWM_TC_HANDLE " bpf",
         .verifyRet = false,
     },
 };
@@ -536,7 +528,9 @@ static int NetdevEnabledSub(const char *format, const char *ethdev)
 // return: 1 is enabled. 0 is disabled.
 static int NetdevEnabled(const char *ethdev, int isIngress)
 {
-    const char *format = isIngress ? "tc filter show dev %s egress|grep bwm_tc_i.o >/dev/null 2>&1" : "tc filter show dev %s egress|grep bwm_tc.o >/dev/null 2>&1" ;
+    const char *format = isIngress ?
+        "tc filter show dev %s egress prio " BWM_TC_PRIO " handle " BWM_TC_HANDLE " 2>/dev/null | grep bwm_tc_i.o >/dev/null 2>&1" :
+        "tc filter show dev %s egress prio " BWM_TC_PRIO " handle " BWM_TC_HANDLE " 2>/dev/null | grep bwm_tc.o >/dev/null 2>&1" ;
     
     if (NetdevEnabledSub(format, ethdev) != 0) {
         return 1;
@@ -575,6 +569,16 @@ static int DisableSpecificNetdevice(const char *ethdev, const void *unused, int 
             BWM_LOG_ERR("execute cmd ret wrong: %s\n", g_disableSeq[i].cmdStr);
             return EXIT_FAIL;
         }
+    }
+
+    // If no other TC filters remain, clean up clsact and root qdisc
+    ret = snprintf(g_cmdBuf, MAX_CMD_LEN,
+        "tc filter show dev %s egress 2>/dev/null | grep -q .", ethdev);
+    if (ret >= 0 && ret < MAX_CMD_LEN && system(g_cmdBuf) != 0) {
+        (void)snprintf(g_cmdBuf, MAX_CMD_LEN, "tc qdisc del dev %s clsact 2>/dev/null", ethdev);
+        (void)system(g_cmdBuf);
+        (void)snprintf(g_cmdBuf, MAX_CMD_LEN, "tc qdisc del dev %s root 2>/dev/null", ethdev);
+        (void)system(g_cmdBuf);
     }
 
     BWM_LOG_INFO("disable %s success\n", ethdev);
@@ -658,11 +662,6 @@ static int EnableSpecificNetdevice(const char *ethdev, const void *unused, int i
             return EXIT_OK;
         }
 
-        if (!DefaultTc(ethdev)) {
-            BWM_LOG_INFO("%s has already enabled other TC\n", ethdev);
-            return EXIT_OK;
-        }
-
         for (i = 0; i < sizeof(g_enableSeqIngress) / sizeof(struct TcCmd); i++) {
             ret = snprintf(g_cmdBuf, MAX_CMD_LEN, g_enableSeqIngress[i].cmdStr, ethdev);
             if (ret < 0 || g_cmdBuf[MAX_CMD_LEN - 1] != '\0') {
@@ -687,11 +686,6 @@ static int EnableSpecificNetdevice(const char *ethdev, const void *unused, int i
 
         if (NetdevEnabled(ethdev, isIngress) == 1) {
             BWM_LOG_INFO("%s has already enabled %s\n", ethdev, isIngress ? "ingress" : "egress");
-            return EXIT_OK;
-        }
-
-        if (!DefaultTc(ethdev)) {
-            BWM_LOG_INFO("%s has already enabled other TC\n", ethdev);
             return EXIT_OK;
         }
 
