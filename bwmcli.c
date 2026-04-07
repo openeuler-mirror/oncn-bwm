@@ -575,78 +575,24 @@ static int DisableSpecificNetdevice(const char *ethdev, const void *unused, int 
     ret = snprintf(g_cmdBuf, MAX_CMD_LEN,
         "tc filter show dev %s egress 2>/dev/null | grep -q .", ethdev);
     if (ret >= 0 && ret < MAX_CMD_LEN && system(g_cmdBuf) != 0) {
-        (void)snprintf(g_cmdBuf, MAX_CMD_LEN, "tc qdisc del dev %s clsact 2>/dev/null", ethdev);
-        (void)system(g_cmdBuf);
-        (void)snprintf(g_cmdBuf, MAX_CMD_LEN, "tc qdisc del dev %s root 2>/dev/null", ethdev);
-        (void)system(g_cmdBuf);
+        ret = snprintf(g_cmdBuf, MAX_CMD_LEN, "tc qdisc del dev %s clsact 2>/dev/null", ethdev);
+        if (ret >= 0 && ret < MAX_CMD_LEN) {
+            ret = system(g_cmdBuf);
+            if (ret < 0) {
+                BWM_LOG_ERR("execute cmd[%s] error: %d\n", g_cmdBuf, ret);
+            }
+        }
+        ret = snprintf(g_cmdBuf, MAX_CMD_LEN, "tc qdisc del dev %s root 2>/dev/null", ethdev);
+        if (ret >= 0 && ret < MAX_CMD_LEN) {
+            ret = system(g_cmdBuf);
+            if (ret < 0) {
+                BWM_LOG_ERR("execute cmd[%s] error: %d\n", g_cmdBuf, ret);
+            }
+        }
     }
 
     BWM_LOG_INFO("disable %s success\n", ethdev);
     return EXIT_OK;
-}
-
-static bool execute_cmd(const char *format, const char *ethdev, const char *search)
-{
-    int ret;
-
-    ret = snprintf(g_cmdBuf, MAX_CMD_LEN, format, ethdev, search);
-    if (ret < 0 || g_cmdBuf[MAX_CMD_LEN - 1] != '\0') {
-        g_cmdBuf[MAX_CMD_LEN - 1] = '\0';
-        BWM_LOG_ERR("Invalid cmd: %s\n", g_cmdBuf);
-        return false;
-    }
-
-    ret = system(g_cmdBuf);
-    if (ret < 0) {
-        BWM_LOG_ERR("execute cmd[%s] error: %d\n", g_cmdBuf, ret);
-        return false;
-    }
-
-    ret = WEXITSTATUS(ret);
-    return ret == 0 ? 1 : 0;
-}
-
-// return: 1 is can be enabled. 0 is can't be enabled.
-static bool DefaultTc(const char *ethdev)
-{
-    char buf[IFNAMSIZ + 1] = {0};
-    int fd;
-    ssize_t size;
-    bool ret;
-
-    const char *format = "tc qdisc ls dev %s|grep %s >/dev/null 2>&1";
-
-    ret = execute_cmd(format, ethdev, "clsact");
-    if (ret) {
-        return 0;
-    }
-
-    // Only devices configured with default qdisc or no qdisc can be enabled.
-    fd = open("/proc/sys/net/core/default_qdisc", O_RDONLY);
-    if (fd >= 0) {
-        size = read(fd, buf, IFNAMSIZ);
-        (void)close(fd);
-        if (size <= 0) {
-            goto qdisc;
-        }
-
-        buf[size - 1] = '\0';
-        const char *bufChar = buf;
-        ret = execute_cmd(format, ethdev, bufChar);
-        if (ret) {
-            return ret;
-        }
-    }
-
-    ret = execute_cmd(format, ethdev, "noqueue");
-    if (ret) {
-        return ret;
-    }
-
-qdisc:
-    // Determine if there are other qdiscs
-    ret = execute_cmd(format, ethdev, "qdisc");
-    return ret == 0 ? 1 : 0;
 }
 
 static int EnableSpecificNetdevice(const char *ethdev, const void *unused, int isIngress)
