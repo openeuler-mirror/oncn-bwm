@@ -1114,6 +1114,9 @@ static int UpdateIpCfgByPath(char *path, __u32 ip, struct edt_throttle_cfg *cfg)
     int ret;
     int fd;
 
+    BWM_LOG_DEBUG("UpdateIpCfgByPath: path=%s ip=0x%x low_rate=%llu high_rate=%llu\n",
+        path, ip, cfg->low_rate, cfg->high_rate);
+
     fd = bpf_obj_get(path);
     if (fd < 0) {
         BWM_LOG_ERR("ERROR: UpdateIpCfgByPath bpf_obj_get failed, Not enabled? %s fd:%d errno:%d\n",
@@ -1123,12 +1126,13 @@ static int UpdateIpCfgByPath(char *path, __u32 ip, struct edt_throttle_cfg *cfg)
     
     ret = bpf_map_update_elem(fd, &ip, cfg, BPF_ANY);
     if (ret != 0) {
-        BWM_LOG_ERR("ERROR: UpdateIpCfgByPath can't update map. %s ret:%d errno:%d\n",
-            path, ret, errno);
+        BWM_LOG_ERR("ERROR: UpdateIpCfgByPath can't update map. %s ip=0x%x ret:%d errno:%d\n",
+            path, ip, ret, errno);
         (void)close(fd);
         return EXIT_FAIL_BPF;
     }
 
+    BWM_LOG_DEBUG("UpdateIpCfgByPath: success path=%s ip=0x%x fd=%d\n", path, ip, fd);
     (void)close(fd);
     return EXIT_OK;
 }
@@ -1137,6 +1141,8 @@ static int UpdateIpThroByPath(char *path, __u32 ip, struct edt_throttle *throttl
 {
     int ret;
     int fd;
+
+    BWM_LOG_DEBUG("UpdateIpThroByPath: path=%s ip=0x%x\n", path, ip);
 
     fd = bpf_obj_get(path);
     if (fd < 0) {
@@ -1147,12 +1153,13 @@ static int UpdateIpThroByPath(char *path, __u32 ip, struct edt_throttle *throttl
     
     ret = bpf_map_update_elem(fd, &ip, throttle, BPF_ANY);
     if (ret != 0) {
-        BWM_LOG_ERR("ERROR: UpdateIpThroByPath can't update map. %s ret:%d errno:%d\n",
-            path, ret, errno);
+        BWM_LOG_ERR("ERROR: UpdateIpThroByPath can't update map. %s ip=0x%x ret:%d errno:%d\n",
+            path, ip, ret, errno);
         (void)close(fd);
         return EXIT_FAIL_BPF;
     }
 
+    BWM_LOG_DEBUG("UpdateIpThroByPath: success path=%s ip=0x%x fd=%d\n", path, ip, fd);
     (void)close(fd);
     return EXIT_OK;
 }
@@ -1237,14 +1244,38 @@ static int SetIpCfg(struct edt_throttle_cfg *cfg, struct edt_throttle *throttle,
 {
     int ret;
 
+    BWM_LOG_DEBUG("SetIpCfg: ip=0x%x isIngress=%d low_rate=%llu high_rate=%llu interval=%llu\n",
+        ip, isIngress, cfg->low_rate, cfg->high_rate, cfg->interval);
+
     if (isIngress) {
         ret = UpdateIpCfgByPath(IPS_I_MAP_PATH, ip, cfg);
+        if (ret != EXIT_OK) {
+            BWM_LOG_ERR("SetIpCfg: UpdateIpCfgByPath(%s) failed for ip=0x%x, ret=%d errno=%d\n",
+                IPS_I_MAP_PATH, ip, ret, errno);
+            return ret;
+        }
         ret = UpdateIpThroByPath(IPS_I_THRO_MAP_PATH, ip, throttle);
+        if (ret != EXIT_OK) {
+            BWM_LOG_ERR("SetIpCfg: UpdateIpThroByPath(%s) failed for ip=0x%x, ret=%d errno=%d\n",
+                IPS_I_THRO_MAP_PATH, ip, ret, errno);
+            return ret;
+        }
     } else {
         ret = UpdateIpCfgByPath(IPS_MAP_PATH, ip, cfg);
+        if (ret != EXIT_OK) {
+            BWM_LOG_ERR("SetIpCfg: UpdateIpCfgByPath(%s) failed for ip=0x%x, ret=%d errno=%d\n",
+                IPS_MAP_PATH, ip, ret, errno);
+            return ret;
+        }
         ret = UpdateIpThroByPath(IPS_THRO_MAP_PATH, ip, throttle);
+        if (ret != EXIT_OK) {
+            BWM_LOG_ERR("SetIpCfg: UpdateIpThroByPath(%s) failed for ip=0x%x, ret=%d errno=%d\n",
+                IPS_THRO_MAP_PATH, ip, ret, errno);
+            return ret;
+        }
     }
     
+    BWM_LOG_DEBUG("SetIpCfg: success for ip=0x%x\n", ip);
     return ret;
 }
 
@@ -1289,43 +1320,61 @@ static bool InitCfgMap(int isIngress)
 
 static int DelIpBandwidth(__u32 ipUint, int isIngress)
 {
-    int fd1,fd2;
+    int fd1, fd2;
     int ret;
-    if (isIngress) {
-        fd1 = bpf_obj_get(IPS_I_MAP_PATH);
-        fd2 = bpf_obj_get(IPS_I_THRO_MAP_PATH);
-    }else {
-        fd1 = bpf_obj_get(IPS_MAP_PATH);
-        fd2 = bpf_obj_get(IPS_THRO_MAP_PATH);
+    const char *cfgPath = isIngress ? IPS_I_MAP_PATH : IPS_MAP_PATH;
+    const char *throPath = isIngress ? IPS_I_THRO_MAP_PATH : IPS_THRO_MAP_PATH;
+
+    BWM_LOG_DEBUG("DelIpBandwidth: ip=0x%x isIngress=%d cfgPath=%s throPath=%s\n",
+        ipUint, isIngress, cfgPath, throPath);
+
+    fd1 = bpf_obj_get(cfgPath);
+    if (fd1 < 0) {
+        BWM_LOG_ERR("ERROR: DelIpBandwidth bpf_obj_get failed for %s, fd=%d errno=%d. Not enabled?\n",
+            cfgPath, fd1, errno);
+        return EXIT_FAIL_BPF;
     }
+    fd2 = bpf_obj_get(throPath);
+    if (fd2 < 0) {
+        BWM_LOG_ERR("ERROR: DelIpBandwidth bpf_obj_get failed for %s, fd=%d errno=%d. Not enabled?\n",
+            throPath, fd2, errno);
+        (void)close(fd1);
+        return EXIT_FAIL_BPF;
+    }
+
+    BWM_LOG_DEBUG("DelIpBandwidth: got fd1=%d fd2=%d for ip=0x%x\n", fd1, fd2, ipUint);
+
     ret = bpf_map_delete_elem(fd1, &ipUint);
     if (ret != 0) {
+        BWM_LOG_DEBUG("DelIpBandwidth: delete from %s for ip=0x%x failed, ret=%d errno=%d\n",
+            cfgPath, ipUint, ret, errno);
         // ENOENT means the key doesn't exist, which is acceptable for idempotent delete
         if (errno != ENOENT) {
-            BWM_LOG_ERR("ERROR: Remove %s map fail. %s ret:%d errno:%d\n",
-                isIngress ? IPS_I_MAP_PATH : IPS_MAP_PATH, ret, errno);
+            BWM_LOG_ERR("ERROR: Remove %s map fail. ret:%d errno:%d\n",
+                cfgPath, ret, errno);
             (void)close(fd1);
             (void)close(fd2);
             return EXIT_FAIL_BPF;
         }
-        BWM_LOG_INFO("IP entry not found in %s (idempotent, possibly auto-evicted by LRU), continue\n", 
-            isIngress ? IPS_I_MAP_PATH : IPS_MAP_PATH);
+        BWM_LOG_INFO("IP entry not found in %s (idempotent), continue\n", cfgPath);
     }
     ret = bpf_map_delete_elem(fd2, &ipUint);
     if (ret != 0) {
+        BWM_LOG_DEBUG("DelIpBandwidth: delete from %s for ip=0x%x failed, ret=%d errno=%d\n",
+            throPath, ipUint, ret, errno);
         // ENOENT means the key doesn't exist, which is acceptable for idempotent delete
         if (errno != ENOENT) {
-            BWM_LOG_ERR("ERROR: Remove %s map fail. %s ret:%d errno:%d\n",
-                isIngress ? IPS_I_THRO_MAP_PATH : IPS_THRO_MAP_PATH, ret, errno);
+            BWM_LOG_ERR("ERROR: Remove %s map fail. ret:%d errno:%d\n",
+                throPath, ret, errno);
             (void)close(fd1);
             (void)close(fd2);
             return EXIT_FAIL_BPF;
         }
-        BWM_LOG_INFO("IP entry not found in %s (idempotent), continue\n",
-            isIngress ? IPS_I_THRO_MAP_PATH : IPS_THRO_MAP_PATH);
+        BWM_LOG_INFO("IP entry not found in %s (idempotent), continue\n", throPath);
     }
     (void)close(fd1);
     (void)close(fd2);
+    BWM_LOG_DEBUG("DelIpBandwidth: completed for ip=0x%x\n", ipUint);
     BWM_LOG_INFO("Del bandwidth success or already deleted (idempotent)\n");
     return EXIT_OK;
 }
@@ -1338,6 +1387,8 @@ static int SetIpBandwidth(__u32 ip, char *args, int argsLen, int isIngress)
     struct edt_throttle_cfg cfg = {0};
     struct edt_throttle throttle = {0};
     __u32 ipUint;
+
+    BWM_LOG_DEBUG("SetIpBandwidth: ip=0x%x args=%s isIngress=%d\n", ip, args, isIngress);
 
     ret = ParseArgs(args, &low, &high, 1, 0);
     if (ret != EXIT_OK) {
@@ -1353,6 +1404,7 @@ static int SetIpBandwidth(__u32 ip, char *args, int argsLen, int isIngress)
     lowtemp = (unsigned long long)low;
     hightemp = (unsigned long long)high;
     ipUint = ip;
+    BWM_LOG_DEBUG("SetIpBandwidth: ipUint=0x%x low=%llu high=%llu\n", ipUint, lowtemp, hightemp);
     if (lowtemp != cfg.low_rate || hightemp != cfg.high_rate) {
         cfg.low_rate = lowtemp;
         cfg.high_rate = hightemp;
@@ -1360,9 +1412,11 @@ static int SetIpBandwidth(__u32 ip, char *args, int argsLen, int isIngress)
 
         ret = SetIpCfg(&cfg, &throttle, ipUint, isIngress);
         if (ret != EXIT_OK) {
+            BWM_LOG_ERR("SetIpBandwidth: SetIpCfg failed for ip=0x%x, ret=%d\n", ipUint, ret);
             return ret;
         }
     }
+    BWM_LOG_DEBUG("SetIpBandwidth: success for ip=0x%x\n", ipUint);
     BWM_LOG_INFO("set bandwidth success\n");
     return EXIT_OK;
 }
@@ -1391,11 +1445,15 @@ static int UpdateIpCfg(int argc, char **argv, int isDelete, int isIngress)
 
     ipUint = ip.s_addr;  // network byte order
 
+    BWM_LOG_DEBUG("UpdateIpCfg: ipStr=%s ipUint=0x%x isDelete=%d isIngress=%d optind=%d argc=%d\n",
+        ipStr, ipUint, isDelete, isIngress, optind, argc);
+
     if (optind >= argc || isDelete == EXIT_OK) {
         if (isDelete != EXIT_OK) {
             (void)fprintf(stderr, "invalid option, extra parameter: %s\n", optarg);
             return EXIT_FAIL_OPTION;
         }
+        BWM_LOG_DEBUG("UpdateIpCfg: calling DelIpBandwidth for ip=0x%x\n", ipUint);
         ret = DelIpBandwidth(ipUint, isIngress);
         return ret;
     }
@@ -1406,6 +1464,7 @@ static int UpdateIpCfg(int argc, char **argv, int isDelete, int isIngress)
         return EXIT_FAIL_OPTION;
     }
 
+    BWM_LOG_DEBUG("UpdateIpCfg: calling SetIpBandwidth for ip=0x%x args=%s\n", ipUint, args);
     ret = SetIpBandwidth(ipUint, args, PRIO_LEN, isIngress);
     if (ret != EXIT_OK) {
         return ret;
