@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: iperf-client-3
+spec:
+  containers:
+  - name: iperf-client-3
+    image: networkstatic/iperf3
+    imagePullPolicy: Never
+    command: ["/bin/sh"]
+    args: ["-c", "sleep 86400"]
+  restartPolicy: Never

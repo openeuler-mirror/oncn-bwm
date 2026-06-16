@@ -26,63 +26,43 @@
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 
+// There may be other qdiscs, and no error handling will be performed.
 static struct TcCmd g_enableSeq[] = {
     {
-        .cmdStr = "tc qdisc del dev %s root >/dev/null 2>&1",
-        .verifyRet = false,
-    },
-    {
-        .cmdStr = "tc qdisc del dev %s clsact >/dev/null 2>&1",
-        .verifyRet = false,
-    },
-    {
-        .cmdStr = "tc qdisc add dev %s root fq",
+        .cmdStr = "tc qdisc add dev %s root fq || true",
         .verifyRet = true,
     },
     {
-        .cmdStr = "tc qdisc add dev %s clsact",
+        .cmdStr = "tc qdisc add dev %s clsact || true",
         .verifyRet = true,
     },
     {
-        .cmdStr = "tc filter add dev %s egress bpf direct-action obj " TC_PROG " sec tc >/dev/null 2>&1",
+        .cmdStr = "tc filter add dev %s egress prio " BWM_TC_PRIO " handle " BWM_TC_HANDLE " bpf direct-action obj " TC_PROG " sec tc >/dev/null 2>&1",
         .verifyRet = true,
     }
 };
 
+// There may be other qdiscs, and no error handling will be performed.
+// This tc egress is not an error. The ingress traffic of BWM is limited by 
+// egress traffic on the peer network interface of the pod veth.
 static struct TcCmd g_enableSeqIngress[] = {
     {
-        .cmdStr = "tc qdisc del dev %s root >/dev/null 2>&1",
-        .verifyRet = false,
-    },
-    {
-        .cmdStr = "tc qdisc del dev %s clsact >/dev/null 2>&1",
-        .verifyRet = false,
-    },
-    {
-        .cmdStr = "tc qdisc add dev %s root fq",
+        .cmdStr = "tc qdisc add dev %s root fq || true",
         .verifyRet = true,
     },
     {
-        .cmdStr = "tc qdisc add dev %s clsact",
+        .cmdStr = "tc qdisc add dev %s clsact || true",
         .verifyRet = true,
     },
     {
-        .cmdStr = "tc filter add dev %s egress bpf direct-action obj " TC_PROG_I " sec tc >/dev/null 2>&1",
+        .cmdStr = "tc filter add dev %s egress prio " BWM_TC_PRIO " handle " BWM_TC_HANDLE " bpf direct-action obj " TC_PROG_I " sec tc >/dev/null 2>&1",
         .verifyRet = true,
     }
 };
 
 static struct TcCmd g_disableSeq[] = {
     {
-        .cmdStr = "tc filter del dev %s egress",
-        .verifyRet = false,
-    },
-    {
-        .cmdStr = "tc qdisc del dev %s clsact",
-        .verifyRet = false,
-    },
-    {
-        .cmdStr = "tc qdisc del dev %s root",
+        .cmdStr = "tc filter del dev %s egress prio " BWM_TC_PRIO " handle " BWM_TC_HANDLE " bpf",
         .verifyRet = false,
     },
 };
@@ -548,7 +528,9 @@ static int NetdevEnabledSub(const char *format, const char *ethdev)
 // return: 1 is enabled. 0 is disabled.
 static int NetdevEnabled(const char *ethdev, int isIngress)
 {
-    const char *format = isIngress ? "tc filter show dev %s egress|grep bwm_tc_i.o >/dev/null 2>&1" : "tc filter show dev %s egress|grep bwm_tc.o >/dev/null 2>&1" ;
+    const char *format = isIngress ?
+        "tc filter show dev %s egress prio " BWM_TC_PRIO " handle " BWM_TC_HANDLE " 2>/dev/null | grep bwm_tc_i.o >/dev/null 2>&1" :
+        "tc filter show dev %s egress prio " BWM_TC_PRIO " handle " BWM_TC_HANDLE " 2>/dev/null | grep bwm_tc.o >/dev/null 2>&1" ;
     
     if (NetdevEnabledSub(format, ethdev) != 0) {
         return 1;
@@ -589,72 +571,28 @@ static int DisableSpecificNetdevice(const char *ethdev, const void *unused, int 
         }
     }
 
+    // If no other TC filters remain, clean up clsact and root qdisc
+    ret = snprintf(g_cmdBuf, MAX_CMD_LEN,
+        "tc filter show dev %s egress 2>/dev/null | grep -q .", ethdev);
+    if (ret >= 0 && ret < MAX_CMD_LEN && system(g_cmdBuf) != 0) {
+        ret = snprintf(g_cmdBuf, MAX_CMD_LEN, "tc qdisc del dev %s clsact 2>/dev/null", ethdev);
+        if (ret >= 0 && ret < MAX_CMD_LEN) {
+            ret = system(g_cmdBuf);
+            if (ret < 0) {
+                BWM_LOG_ERR("execute cmd[%s] error: %d\n", g_cmdBuf, ret);
+            }
+        }
+        ret = snprintf(g_cmdBuf, MAX_CMD_LEN, "tc qdisc del dev %s root 2>/dev/null", ethdev);
+        if (ret >= 0 && ret < MAX_CMD_LEN) {
+            ret = system(g_cmdBuf);
+            if (ret < 0) {
+                BWM_LOG_ERR("execute cmd[%s] error: %d\n", g_cmdBuf, ret);
+            }
+        }
+    }
+
     BWM_LOG_INFO("disable %s success\n", ethdev);
     return EXIT_OK;
-}
-
-static bool execute_cmd(const char *format, const char *ethdev, const char *search)
-{
-    int ret;
-
-    ret = snprintf(g_cmdBuf, MAX_CMD_LEN, format, ethdev, search);
-    if (ret < 0 || g_cmdBuf[MAX_CMD_LEN - 1] != '\0') {
-        g_cmdBuf[MAX_CMD_LEN - 1] = '\0';
-        BWM_LOG_ERR("Invalid cmd: %s\n", g_cmdBuf);
-        return false;
-    }
-
-    ret = system(g_cmdBuf);
-    if (ret < 0) {
-        BWM_LOG_ERR("execute cmd[%s] error: %d\n", g_cmdBuf, ret);
-        return false;
-    }
-
-    ret = WEXITSTATUS(ret);
-    return ret == 0 ? 1 : 0;
-}
-
-// return: 1 is can be enabled. 0 is can't be enabled.
-static bool DefaultTc(const char *ethdev)
-{
-    char buf[IFNAMSIZ + 1] = {0};
-    int fd;
-    ssize_t size;
-    bool ret;
-
-    const char *format = "tc qdisc ls dev %s|grep %s >/dev/null 2>&1";
-
-    ret = execute_cmd(format, ethdev, "clsact");
-    if (ret) {
-        return 0;
-    }
-
-    // Only devices configured with default qdisc or no qdisc can be enabled.
-    fd = open("/proc/sys/net/core/default_qdisc", O_RDONLY);
-    if (fd >= 0) {
-        size = read(fd, buf, IFNAMSIZ);
-        (void)close(fd);
-        if (size <= 0) {
-            goto qdisc;
-        }
-
-        buf[size - 1] = '\0';
-        const char *bufChar = buf;
-        ret = execute_cmd(format, ethdev, bufChar);
-        if (ret) {
-            return ret;
-        }
-    }
-
-    ret = execute_cmd(format, ethdev, "noqueue");
-    if (ret) {
-        return ret;
-    }
-
-qdisc:
-    // Determine if there are other qdiscs
-    ret = execute_cmd(format, ethdev, "qdisc");
-    return ret == 0 ? 1 : 0;
 }
 
 static int EnableSpecificNetdevice(const char *ethdev, const void *unused, int isIngress)
@@ -667,11 +605,6 @@ static int EnableSpecificNetdevice(const char *ethdev, const void *unused, int i
 
         if (NetdevEnabled(ethdev, isIngress) == 1) {
             BWM_LOG_INFO("%s %s has already enabled\n", ethdev, (isIngress ? "ingress" : "egress"));
-            return EXIT_OK;
-        }
-
-        if (!DefaultTc(ethdev)) {
-            BWM_LOG_INFO("%s has already enabled other TC\n", ethdev);
             return EXIT_OK;
         }
 
@@ -699,11 +632,6 @@ static int EnableSpecificNetdevice(const char *ethdev, const void *unused, int i
 
         if (NetdevEnabled(ethdev, isIngress) == 1) {
             BWM_LOG_INFO("%s has already enabled %s\n", ethdev, isIngress ? "ingress" : "egress");
-            return EXIT_OK;
-        }
-
-        if (!DefaultTc(ethdev)) {
-            BWM_LOG_INFO("%s has already enabled other TC\n", ethdev);
             return EXIT_OK;
         }
 
@@ -905,10 +833,16 @@ static int BreakMultiArgs(char *args, char arg1[], char arg2[], int mutilArgs)
             return EXIT_FAIL_OPTION;
         }
     } else {
-        if (arg1[0] == '\0' || arg2[0] == '\0') {
-            (void)fprintf(stderr, "invalid option: need 2 args\n");
+        if (arg1[0] == '\0') {
+            (void)fprintf(stderr, "invalid option: need at least 1 arg\n");
             return EXIT_FAIL_OPTION;
         }
+        
+        /* If only one argument is provided, both arg1 and arg2 use the same argument. */
+        if (arg2[0] == '\0') {
+            snprintf(arg2, ARG_LEN + 1, "%s", arg1);
+        }
+
     }
     return EXIT_OK;
 }
@@ -971,6 +905,7 @@ static int ParseArgs(char *args, long long *val1, long long *val2, int mutilArgs
 
     return EXIT_OK;
 }
+
 
 static int CfgsInfo(int argc, char **argv, int isSet, int isIngress)
 {
@@ -1120,6 +1055,61 @@ static int ReadCfgByPath(char *path, struct edt_throttle_cfg *cfg)
     return EXIT_OK;
 }
 
+static int UpdateIpCfgByPath(char *path, __u32 ip, struct edt_throttle_cfg *cfg)
+{
+    int ret;
+    int fd;
+
+    BWM_LOG_DEBUG("UpdateIpCfgByPath: path=%s ip=0x%x low_rate=%llu high_rate=%llu\n",
+        path, ip, cfg->low_rate, cfg->high_rate);
+
+    fd = bpf_obj_get(path);
+    if (fd < 0) {
+        BWM_LOG_ERR("ERROR: UpdateIpCfgByPath bpf_obj_get failed, Not enabled? %s fd:%d errno:%d\n",
+            path, fd, errno);
+        return EXIT_FAIL_BPF;
+    }
+    
+    ret = bpf_map_update_elem(fd, &ip, cfg, BPF_ANY);
+    if (ret != 0) {
+        BWM_LOG_ERR("ERROR: UpdateIpCfgByPath can't update map. %s ip=0x%x ret:%d errno:%d\n",
+            path, ip, ret, errno);
+        (void)close(fd);
+        return EXIT_FAIL_BPF;
+    }
+
+    BWM_LOG_DEBUG("UpdateIpCfgByPath: success path=%s ip=0x%x fd=%d\n", path, ip, fd);
+    (void)close(fd);
+    return EXIT_OK;
+}
+
+static int UpdateIpThroByPath(char *path, __u32 ip, struct edt_throttle *throttle)
+{
+    int ret;
+    int fd;
+
+    BWM_LOG_DEBUG("UpdateIpThroByPath: path=%s ip=0x%x\n", path, ip);
+
+    fd = bpf_obj_get(path);
+    if (fd < 0) {
+        BWM_LOG_ERR("ERROR: UpdateIpThroByPath bpf_obj_get failed, Not enabled? %s fd:%d errno:%d\n",
+            path, fd, errno);
+        return EXIT_FAIL_BPF;
+    }
+    
+    ret = bpf_map_update_elem(fd, &ip, throttle, BPF_ANY);
+    if (ret != 0) {
+        BWM_LOG_ERR("ERROR: UpdateIpThroByPath can't update map. %s ip=0x%x ret:%d errno:%d\n",
+            path, ip, ret, errno);
+        (void)close(fd);
+        return EXIT_FAIL_BPF;
+    }
+
+    BWM_LOG_DEBUG("UpdateIpThroByPath: success path=%s ip=0x%x fd=%d\n", path, ip, fd);
+    (void)close(fd);
+    return EXIT_OK;
+}
+
 static int UpdateCfgByPath(char *path, struct edt_throttle_cfg *cfg)
 {
     int ret;
@@ -1196,6 +1186,45 @@ static int ReadCfg(struct edt_throttle_cfg *cfg, int isIngress)
     return ret;
 }
 
+static int SetIpCfg(struct edt_throttle_cfg *cfg, struct edt_throttle *throttle, __u32 ip, int isIngress)
+{
+    int ret;
+
+    BWM_LOG_DEBUG("SetIpCfg: ip=0x%x isIngress=%d low_rate=%llu high_rate=%llu interval=%llu\n",
+        ip, isIngress, cfg->low_rate, cfg->high_rate, cfg->interval);
+
+    if (isIngress) {
+        ret = UpdateIpCfgByPath(IPS_I_MAP_PATH, ip, cfg);
+        if (ret != EXIT_OK) {
+            BWM_LOG_ERR("SetIpCfg: UpdateIpCfgByPath(%s) failed for ip=0x%x, ret=%d errno=%d\n",
+                IPS_I_MAP_PATH, ip, ret, errno);
+            return ret;
+        }
+        ret = UpdateIpThroByPath(IPS_I_THRO_MAP_PATH, ip, throttle);
+        if (ret != EXIT_OK) {
+            BWM_LOG_ERR("SetIpCfg: UpdateIpThroByPath(%s) failed for ip=0x%x, ret=%d errno=%d\n",
+                IPS_I_THRO_MAP_PATH, ip, ret, errno);
+            return ret;
+        }
+    } else {
+        ret = UpdateIpCfgByPath(IPS_MAP_PATH, ip, cfg);
+        if (ret != EXIT_OK) {
+            BWM_LOG_ERR("SetIpCfg: UpdateIpCfgByPath(%s) failed for ip=0x%x, ret=%d errno=%d\n",
+                IPS_MAP_PATH, ip, ret, errno);
+            return ret;
+        }
+        ret = UpdateIpThroByPath(IPS_THRO_MAP_PATH, ip, throttle);
+        if (ret != EXIT_OK) {
+            BWM_LOG_ERR("SetIpCfg: UpdateIpThroByPath(%s) failed for ip=0x%x, ret=%d errno=%d\n",
+                IPS_THRO_MAP_PATH, ip, ret, errno);
+            return ret;
+        }
+    }
+    
+    BWM_LOG_DEBUG("SetIpCfg: success for ip=0x%x\n", ip);
+    return ret;
+}
+
 static int UpdateCfg(struct edt_throttle_cfg *cfg, int isIngress)
 {
     int ret;
@@ -1235,16 +1264,118 @@ static bool InitCfgMap(int isIngress)
     return true;
 }
 
-static int UpdateIp(int isDelete)
+static int DelIpBandwidth(__u32 ipUint, int isIngress)
+{
+    int fd1, fd2;
+    int ret;
+    const char *cfgPath = isIngress ? IPS_I_MAP_PATH : IPS_MAP_PATH;
+    const char *throPath = isIngress ? IPS_I_THRO_MAP_PATH : IPS_THRO_MAP_PATH;
+
+    BWM_LOG_DEBUG("DelIpBandwidth: ip=0x%x isIngress=%d cfgPath=%s throPath=%s\n",
+        ipUint, isIngress, cfgPath, throPath);
+
+    fd1 = bpf_obj_get(cfgPath);
+    if (fd1 < 0) {
+        BWM_LOG_ERR("ERROR: DelIpBandwidth bpf_obj_get failed for %s, fd=%d errno=%d. Not enabled?\n",
+            cfgPath, fd1, errno);
+        return EXIT_FAIL_BPF;
+    }
+    fd2 = bpf_obj_get(throPath);
+    if (fd2 < 0) {
+        BWM_LOG_ERR("ERROR: DelIpBandwidth bpf_obj_get failed for %s, fd=%d errno=%d. Not enabled?\n",
+            throPath, fd2, errno);
+        (void)close(fd1);
+        return EXIT_FAIL_BPF;
+    }
+
+    BWM_LOG_DEBUG("DelIpBandwidth: got fd1=%d fd2=%d for ip=0x%x\n", fd1, fd2, ipUint);
+
+    ret = bpf_map_delete_elem(fd1, &ipUint);
+    if (ret != 0) {
+        BWM_LOG_DEBUG("DelIpBandwidth: delete from %s for ip=0x%x failed, ret=%d errno=%d\n",
+            cfgPath, ipUint, ret, errno);
+        // ENOENT means the key doesn't exist, which is acceptable for idempotent delete
+        if (errno != ENOENT) {
+            BWM_LOG_ERR("ERROR: Remove %s map fail. ret:%d errno:%d\n",
+                cfgPath, ret, errno);
+            (void)close(fd1);
+            (void)close(fd2);
+            return EXIT_FAIL_BPF;
+        }
+        BWM_LOG_INFO("IP entry not found in %s (idempotent), continue\n", cfgPath);
+    }
+    ret = bpf_map_delete_elem(fd2, &ipUint);
+    if (ret != 0) {
+        BWM_LOG_DEBUG("DelIpBandwidth: delete from %s for ip=0x%x failed, ret=%d errno=%d\n",
+            throPath, ipUint, ret, errno);
+        // ENOENT means the key doesn't exist, which is acceptable for idempotent delete
+        if (errno != ENOENT) {
+            BWM_LOG_ERR("ERROR: Remove %s map fail. ret:%d errno:%d\n",
+                throPath, ret, errno);
+            (void)close(fd1);
+            (void)close(fd2);
+            return EXIT_FAIL_BPF;
+        }
+        BWM_LOG_INFO("IP entry not found in %s (idempotent), continue\n", throPath);
+    }
+    (void)close(fd1);
+    (void)close(fd2);
+    BWM_LOG_DEBUG("DelIpBandwidth: completed for ip=0x%x\n", ipUint);
+    BWM_LOG_INFO("Del bandwidth success or already deleted (idempotent)\n");
+    return EXIT_OK;
+}
+
+static int SetIpBandwidth(__u32 ip, char *args, int argsLen, int isIngress)
 {
     int ret;
-    int fd;
-    int priority = 1;
+    long long low, high;
+    unsigned long long lowtemp, hightemp;
+    struct edt_throttle_cfg cfg = {0};
+    struct edt_throttle throttle = {0};
+    __u32 ipUint;
+
+    BWM_LOG_DEBUG("SetIpBandwidth: ip=0x%x args=%s isIngress=%d\n", ip, args, isIngress);
+
+    ret = ParseArgs(args, &low, &high, 1, 0);
+    if (ret != EXIT_OK) {
+        return ret;
+    }
+
+    if (low < LOWEST_BANDWIDTH || high > HIGHEST_BANDWIDTH || (low > high)) {
+        (void)fprintf(stderr, "invalid bandwidth: %lld,%lld, bandwidth should between %lld, %lld\n", low, high,
+            LOWEST_BANDWIDTH, HIGHEST_BANDWIDTH);
+        return EXIT_FAIL_OPTION;
+    }
+
+    lowtemp = (unsigned long long)low;
+    hightemp = (unsigned long long)high;
+    ipUint = ip;
+    BWM_LOG_DEBUG("SetIpBandwidth: ipUint=0x%x low=%llu high=%llu\n", ipUint, lowtemp, hightemp);
+    if (lowtemp != cfg.low_rate || hightemp != cfg.high_rate) {
+        cfg.low_rate = lowtemp;
+        cfg.high_rate = hightemp;
+        cfg.interval = 1;
+
+        ret = SetIpCfg(&cfg, &throttle, ipUint, isIngress);
+        if (ret != EXIT_OK) {
+            BWM_LOG_ERR("SetIpBandwidth: SetIpCfg failed for ip=0x%x, ret=%d\n", ipUint, ret);
+            return ret;
+        }
+    }
+    BWM_LOG_DEBUG("SetIpBandwidth: success for ip=0x%x\n", ipUint);
+    BWM_LOG_INFO("set bandwidth success\n");
+    return EXIT_OK;
+}
+
+static int UpdateIpCfg(int argc, char **argv, int isDelete, int isIngress)
+{
+    int ret;
+    char args[PRIO_LEN] = {0};
     struct in_addr ip;
     __u32 ipUint;
 
     char ipStr[IP_LEN + 1] = {0};
-    
+    //
     (void)strncpy(ipStr, optarg, IP_LEN);
     if (ipStr[IP_LEN] != '\0') {
         (void)fprintf(stderr, "invalid ip, too long: %s\n", optarg);
@@ -1260,25 +1391,34 @@ static int UpdateIp(int isDelete)
 
     ipUint = ip.s_addr;  // network byte order
 
-    fd = bpf_obj_get(IPS_I_MAP_PATH);
-    if (fd < 0) {
-        BWM_LOG_ERR("ERROR: %s bpf_obj_get failed, Not enabled? %s fd:%d errno:%d\n",
-            isDelete ? "RemoveIp" : "AddIp", IPS_I_MAP_PATH, fd, errno);
-        return EXIT_FAIL_BPF;
+    BWM_LOG_DEBUG("UpdateIpCfg: ipStr=%s ipUint=0x%x isDelete=%d isIngress=%d optind=%d argc=%d\n",
+        ipStr, ipUint, isDelete, isIngress, optind, argc);
+
+    if (optind >= argc || isDelete == EXIT_OK) {
+        if (isDelete != EXIT_OK) {
+            (void)fprintf(stderr, "invalid option, extra parameter: %s\n", optarg);
+            return EXIT_FAIL_OPTION;
+        }
+        BWM_LOG_DEBUG("UpdateIpCfg: calling DelIpBandwidth for ip=0x%x\n", ipUint);
+        ret = DelIpBandwidth(ipUint, isIngress);
+        return ret;
     }
 
-    ret = isDelete ? bpf_map_delete_elem(fd, &ipUint) : bpf_map_update_elem(fd, &ipUint, &priority, BPF_ANY);
-    if (ret != 0) {
-        BWM_LOG_ERR("ERROR: %s map fail. %s ret:%d errno:%d\n",
-            isDelete ? "RemoveIp" : "AddIp", IPS_I_MAP_PATH, ret, errno);
-        (void)close(fd);
-        return EXIT_FAIL_BPF;
+    (void)strncpy(args, argv[optind], PRIO_LEN - 1);
+    if (args[PRIO_LEN - 1] != '\0') {
+        (void)fprintf(stderr, "invalid args, too long: %s\n", argv[optind]);
+        return EXIT_FAIL_OPTION;
     }
 
-    if (!isDelete)
-        BWM_LOG_INFO("ip(network byte order): %u\n", ipUint);
-    BWM_LOG_INFO("%s %s success\n", isDelete ? "RemoveIp" : "AddIp", ipStr);
-    (void)close(fd);
+    BWM_LOG_DEBUG("UpdateIpCfg: calling SetIpBandwidth for ip=0x%x args=%s\n", ipUint, args);
+    ret = SetIpBandwidth(ipUint, args, PRIO_LEN, isIngress);
+    if (ret != EXIT_OK) {
+        return ret;
+    }
+
+    /* move to next option */
+    optind++;
+
     return EXIT_OK;
 }
 
@@ -1416,7 +1556,7 @@ int main(int argc, char **argv)
         return EXIT_FAIL_OPTION;
     }
 
-    while ((opt = getopt_long(argc, argv, "vVhe::E::d::D::p:P:s:S:A:R:", g_longOptions, &longindex)) != -1) {
+    while ((opt = getopt_long(argc, argv, "vVhe::E::d::D::p:P:s:S:A:R:a:r:", g_longOptions, &longindex)) != -1) {
         hasOptions = 1;
         isSet = 1;
         enable = 1;
@@ -1467,13 +1607,27 @@ int main(int argc, char **argv)
                 }
                 break;
             case 'A':
-                ret = UpdateIp(0);
+                isIngress = 1;
+                ret = UpdateIpCfg(argc, argv, 1, isIngress);
                 if (ret != EXIT_OK) {
                     return ret;
                 }
                 break;
             case 'R':
-                ret = UpdateIp(1);
+                isIngress = 1;
+                ret = UpdateIpCfg(argc, argv, 0, isIngress);
+                if (ret != EXIT_OK) {
+                    return ret;
+                }
+                break;
+            case 'a':
+                ret = UpdateIpCfg(argc, argv, 1, isIngress);
+                if (ret != EXIT_OK) {
+                    return ret;
+                }
+                break;
+            case 'r':
+                ret = UpdateIpCfg(argc, argv, 0, isIngress);
                 if (ret != EXIT_OK) {
                     return ret;
                 }

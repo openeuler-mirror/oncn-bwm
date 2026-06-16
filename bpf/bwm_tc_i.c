@@ -34,10 +34,20 @@ struct bpf_elf_map_t SEC("maps") throttle_i_map = {
 	.id = 0,
 };
 
-struct bpf_elf_map_t SEC("maps") ips_i_map = {
-	.type = BPF_MAP_TYPE_LRU_HASH,
+struct bpf_elf_map_t SEC("maps") ips_i_cfg_map = {
+	.type = BPF_MAP_TYPE_HASH,
 	.key_size = sizeof(__u32), // ipv4
-	.value_size = sizeof(int),
+	.value_size = sizeof(struct edt_throttle_cfg),
+	.pinning = PIN_GLOBAL_NS,
+	.max_elem = IPS_MAX_NUM,
+	.flags = 0,
+	.id = 0,
+};
+
+struct bpf_elf_map_t SEC("maps") ips_throttle_i_map = {
+	.type = BPF_MAP_TYPE_HASH,
+	.key_size = sizeof(unsigned int),
+	.value_size = sizeof(struct edt_throttle),
 	.pinning = PIN_GLOBAL_NS,
 	.max_elem = IPS_MAX_NUM,
 	.flags = 0,
@@ -48,51 +58,48 @@ SEC("tc")
 int bwm_tc(struct __sk_buff *skb)
 {
 	struct edt_throttle *throttle = NULL;
+	struct edt_throttle *online_throttle = NULL;
+	struct edt_throttle *ips_throttle = NULL;
 	struct edt_throttle_cfg * cfg = NULL;
+	struct edt_throttle_cfg * ips_cfg = NULL;
 	unsigned int map_index = 0;
 	unsigned long ip = 0;
-	int *prio = NULL;
+	const struct __sk_buff *skb_con = skb;
 
 	cfg = bpf_map_lookup_elem(&throttle_i_cfg, &map_index);
 	if (cfg == NULL)
 		return TC_ACT_OK;
 
-	throttle = bpf_map_lookup_elem(&throttle_i_map, &map_index);
-	if (throttle == NULL)
+	online_throttle = bpf_map_lookup_elem(&throttle_i_map, &map_index);
+	if (online_throttle == NULL)
 		return TC_ACT_OK;
-	const struct edt_throttle_cfg * cfg_con = cfg;
-	if (throttle->rate == 0)
-		throttle_init(cfg_con, throttle);
+	throttle = online_throttle;
+	struct edt_throttle_cfg * cfg_con = cfg;
+	if (online_throttle->rate == 0)
+		throttle_init(cfg_con, online_throttle);
 
-	// skb->remote_ip4 is not visiable to tc, we need parse dest_ip from skb handly
-	// https://github1s.com/libbpf/libbpf-bootstrap/blob/HEAD/examples/c/tc.bpf.c#L12
-	void *data_end = (void *)(__u64)skb->data_end;
-	void *data = (void *)(__u64)skb->data;
-	struct ethhdr *l2;
-	struct iphdr *l3;
-
-	if (skb->protocol != bpf_htons(ETH_P_IP))
-		return TC_ACT_OK;
-	l2 = data;
-	if ((void *)(l2 + 1) > data_end)
-		return TC_ACT_OK;
-
-	l3 = (struct iphdr *)(l2 + 1);
-	if ((void *)(l3 + 1) > data_end)
+	struct iphdr *l3 = getiphdr(skb);
+	if (l3 == NULL)
 		return TC_ACT_OK;
 
 	ip = l3->daddr;
-
-	const struct __sk_buff *skb_con = skb;
-	prio = bpf_map_lookup_elem(&ips_i_map, &ip);
-	if (prio != NULL) {
+	
+	ips_cfg = bpf_map_lookup_elem(&ips_i_cfg_map, &ip);
+	if (ips_cfg != NULL) {
 		// matched: offline flow
+		ips_throttle = bpf_map_lookup_elem(&ips_throttle_i_map, &ip);
+		if (ips_throttle != NULL) {
+			cfg_con->high_rate = ips_cfg->high_rate;
+			cfg_con->low_rate = ips_cfg->low_rate;
+			throttle = ips_throttle;
+		}
 		bwm_offline(skb, throttle);
-	} else {
-		// dismatched: online flow
+	}
+	else {
 		bwm_online(skb_con, throttle);
 	}
-	adjust_rate(cfg_con, throttle);
+
+	adjust_rate(cfg_con, online_throttle, throttle);
 
 	bpf_printk("[tc.c]dest_ip=%u\n", ip);
 	return TC_ACT_OK;

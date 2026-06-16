@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: iperf-server-3
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: iperf-server-3
+  template:
+    metadata:
+      labels:
+        app: iperf-server-3
+      annotations:
+        enable-feature: "true"
+        bandwidth-ingress: "400mb"
+        bandwidth-egress: "200mb"
+
+    spec:
+      containers:
+      - name: iperf-server-3
+        image: networkstatic/iperf3
+        imagePullPolicy: Never
+        args: ["-s"]
+        ports:
+        - containerPort: 5201
+      tolerations:
+      - key: "node.kubernetes.io/not-ready"
+        operator: "Exists"
+        effect: "NoSchedule"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: iperf-server-3
+spec:
+  selector:
+    app: iperf-server-3
+  ports:
+    - protocol: TCP
+      port: 5201
+      targetPort: 5201
+  type: ClusterIP

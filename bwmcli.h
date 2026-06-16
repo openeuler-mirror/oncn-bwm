@@ -23,6 +23,8 @@
 
 #define MAX_PROG_CNT        10
 #define MAX_CMD_LEN         (256 + NAME_MAX)
+#define BWM_TC_PRIO         "1"
+#define BWM_TC_HANDLE       "0x8880"
 
 #define DECIMAL             10
 #define BWM_VERSION         "1.0"
