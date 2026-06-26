@@ -38,15 +38,20 @@ The specific capabilities provided are as follows.
 
 ```bash
 oncn-bwm
-│  bwmcli.c
-│  bwmcli.h
+│  bwmcli.c          # bwmcli command-line tool
+│  bwmcli.h          # Header file and constant definitions
 │  CMakeLists.txt
 │  LICENSE
 │  README.md
 │
-├─bpf # Contains three eBPF program files that implement the bandwidth management logic
+├─bpf                # eBPF programs implementing bandwidth management logic
+│  ├─bwm_prio_kern.c # cgroup priority setting program, sets packet priority via cgroup_skb/egress hook
+│  ├─bwm_tc.c        # egress bandwidth management TC program, distinguishes online/offline traffic by cgroup classid
+│  ├─bwm_tc_i.c      # ingress bandwidth management TC program, distinguishes online/offline traffic by parsing destination IP
+│  ├─bwm_tc.h        # shared data structure definitions (bandwidth config, throttle state, statistics)
+│  └─bwm_tc_common.h # inline helper functions (online/offline traffic processing, rate adjustment, throttle init)
 │
-└─tools # Online/offline bandwidth monitoring tools built on bpftrace
+└─tools              # Online/offline bandwidth monitoring tools built on bpftrace
 ```
 
 ## Installation
@@ -65,37 +70,40 @@ oncn-bwm
 
 ### Interface Description
 
-**Interface 1**
-
-Description
+**Interface 1: NIC QoS Enable/Disable**
 
 ```bash
-bwmcli –e/-d ethx # Enable/disable QoS on a specific NIC
-bwmcli –e/-d      # Enable/disable QoS on all NICs
-bwmcli -E/-D ethx # Enable/disable ingress QoS on a specific NIC
-bwmcli –E/-D      # Enable/disable ingress QoS on all NICs
+bwmcli -e/-d ethx    # Enable/disable egress QoS on a specific NIC
+bwmcli -e/-d         # Enable/disable egress QoS on all NICs
+bwmcli -E/-D ethx    # Enable/disable ingress QoS on a specific NIC
+bwmcli -E/-D         # Enable/disable ingress QoS on all NICs
+bwmcli -v            # Display version number
 ```
 
 Example
 
 ```bash
-# bwmcli –e eth0 –e eth1
+# bwmcli -e eth0 -e eth1
 enable eth0 success
 enable eth1 success
 
-# bwmcli –d eth0 –d eth1
+# bwmcli -d eth0 -d eth1
 disable eth0 success
 disable eth1 success
+
+# bwmcli -v
+version: 1.0
 ```
 
-**Interface 2**
-
-Description (for egress)
+**Interface 2: Cgroup Priority Setting (Egress)**
 
 ```bash
-bwmcli –s path <prio> # Set the network priority for a specific cgroup
-bwmcli –p path        # Query the network priority of a specific cgroup
+bwmcli -s path <prio>  # Set priority for a cgroup (supports cgroup v1/v2)
+bwmcli -p path         # Query priority for a cgroup
 ```
+- Priority 0 = online service, -1 = offline service
+- cgroup v1 path example: `/sys/fs/cgroup/net_cls/xxx`
+- cgroup v2 path example: `/sys/fs/cgroup/xxx`
 
 Example
 
@@ -107,81 +115,73 @@ set prio success
 prio is 0
 ```
 
-**Interface 3**
-
-Description (for ingress)
+**Interface 3: IP Priority Setting (Ingress)**
 
 ```bash
-bwmcli –A 172.17.0.2 # Classify the ingress traffic for the specified IP address as offline
-bwmcli –R 172.17.0.2 # Classify the ingress traffic for the specified IP address as online
+bwmcli -A <ip>  # Mark ingress traffic for IP as offline
+bwmcli -R <ip>  # Mark ingress traffic for IP as online
 ```
+- Unconfigured IPs default to online service
 
 Example
 
 ```bash
-# bwmcli –A 172.17.0.2
+# bwmcli -A 172.17.0.2
 AddIp 172.17.0.2 success
-# bwmcli –R 172.17.0.2
+# bwmcli -R 172.17.0.2
 RemoveIp 172.17.0.2 success
 ```
 
-**Interface 4**
-
-Description
+**Interface 4: Bandwidth Limit Setting**
 
 ```bash
-bwmcli –s bandwidth <low,high> # Set the offline bandwidth
-bwmcli –p bandwidth            # Query the offline bandwidth
-bwmcli –S bandwidth <low,high> # Set the ingress offline bandwidth
-bwmcli –P bandwidth            # Query the ingress offline bandwidth
+bwmcli -s bandwidth <low,high>  # Set egress offline bandwidth
+bwmcli -p bandwidth              # Query egress offline bandwidth
+bwmcli -S bandwidth <low,high>  # Set ingress offline bandwidth
+bwmcli -P bandwidth              # Query ingress offline bandwidth
 ```
+- Bandwidth range: 1MB ~ 9999GB
+- low: low bandwidth for offline (used when watermark triggered)
+- high: high bandwidth for offline (used when watermark not triggered)
 
 Example
 
 ```bash
 # bwmcli -s bandwidth 30mb,100mb
 set bandwidth success
-# bwmcli -S bandwidth 30mb,100mb
-set bandwidth success
 
 # bwmcli -p bandwidth
 bandwidth is 31457280(B),104857600(B)
-# bwmcli -P bandwidth
-bandwidth is 31457280(B),104857600(B)
 ```
 
-**Interface 5**
-
-Description
+**Interface 5: Watermark Setting**
 
 ```bash
-bwmcli –s waterline <val> # Set the online traffic watermark
-bwmcli –p waterline       # Query the online traffic watermark
-bwmcli –S waterline <val> # Set the ingress online traffic watermark
-bwmcli –P waterline       # Query the ingress online traffic watermark
+bwmcli -s waterline <val>  # Set egress online watermark
+bwmcli -p waterline        # Query egress online watermark
+bwmcli -S waterline <val>  # Set ingress online watermark
+bwmcli -P waterline        # Query ingress online watermark
 ```
+- Watermark range: 20MB ~ 9999GB
+- When online bandwidth is below watermark, offline can use high bandwidth
+- When online bandwidth exceeds watermark, offline is limited to low bandwidth
+- Check interval: 10ms
 
 Example
 
 ```bash
 # bwmcli -s waterline 20mb
 set waterline success
-# bwmcli -S waterline 20mb
-set waterline success
 
 # bwmcli -p waterline
 waterline is 20971520 (B)
-# bwmcli -P waterline
-waterline is 20971520 (B)
 ```
 
-**Interface 6**
-
-Description
+**Interface 6: Traffic Statistics**
 
 ```bash
-bwmcli –p stats # Print internal statistics for egress traffic
-bwmcli –P stats # Print internal statistics for ingress traffic
+bwmcli -p stats  # Print egress traffic internal statistics
+bwmcli -P stats  # Print ingress traffic internal statistics
 ```
 
 Example
@@ -193,48 +193,68 @@ online_pkts: 982
 offline_pkts: 0
 online_rate: 28190
 offline_rate: 0
-
-# bwmcli –P stats
-offline_target_bandwidth: 1073741824
-online_pkts: 1150
-offline_pkts: 0
-online_rate: 27306
-offline_rate: 0
 ```
 
-**Interface 7**
-
-Description
+**Interface 7: NIC Status Query**
 
 ```bash
-bwmcli –p devs # Print the enablement status of all NICs on the system
+bwmcli -p devs  # Show egress enablement status of all NICs
+bwmcli -P devs  # Show ingress enablement status of all NICs
 ```
 
 Example
 
 ```bash
-# bwmcli –p devs
+# bwmcli -p devs
 lo              : disabled
 enp2s2          : disabled
+eth0            : egress enabled
 
-# bwmcli –P devs
-lo              : disabled
-enp2s2          : disabled
+# bwmcli -P devs
+veth123456      : ingress enabled
 ```
 
 ### Typical Use Cases
 
 ```bash
-bwmcli -p devs # Query the current enablement status of all NICs on the system
-bwmcli -s /sys/fs/cgroup/net_cls/online 0
-bwmcli -s /sys/fs/cgroup/net_cls/offline -1
-bwmcli -e eth0 # Enable QoS on the eth0 interface
-bwmcli -s bandwidth 20mb,1gb # Configure the offline service bandwidth limits
-bwmcli -s waterline 30mb # Configure the online traffic watermark
-bwmcli -E veth123456 # Enable QoS on the host-side veth123456 (corresponding to Pod ingress traffic)
-bwmcli –A 172.17.0.2 # Classify ingress traffic destined for the target IP address as offline
-bwmcli –R 172.17.0.2 # Remove the offline classification of ingress traffic for the target IP address
+# 1. Check current NIC status
+bwmcli -p devs
+
+# 2. Configure Pod egress QoS (assuming Pod uses cgroup v1)
+bwmcli -s /sys/fs/cgroup/net_cls/online 0      # Mark online service
+bwmcli -s /sys/fs/cgroup/net_cls/offline -1    # Mark offline service
+bwmcli -e eth0                                   # Enable eth0 egress QoS
+
+# 3. Configure offline service bandwidth limits
+bwmcli -s bandwidth 20mb,1gb  # Set bandwidth: low=20MB, high=1GB
+bwmcli -s waterline 30mb      # Set watermark: 30MB
+
+# 4. Configure Pod ingress QoS (host side)
+bwmcli -E veth123456          # Enable veth123456 ingress QoS
+bwmcli -A 172.17.0.2          # Mark IP as offline flow
+bwmcli -R 172.17.0.2          # Remove offline marking
+
+# 5. Query configuration
+bwmcli -p bandwidth            # Query egress bandwidth config
+bwmcli -p waterline           # Query watermark config
+bwmcli -p stats               # View traffic statistics
 ```
+
+## Default Configuration Values
+
+| Parameter | Default Value | Description |
+|-----------|---------------|-------------|
+| Watermark | 20MB | Online service watermark threshold |
+| Low bandwidth (low_rate) | 20MB | Offline bandwidth when watermark triggered |
+| High bandwidth (high_rate) | 1GB | Offline bandwidth when watermark not triggered |
+| Check interval | 10ms | Period for checking if online bandwidth exceeds watermark |
+
+## Bandwidth and Watermark Limits
+
+| Parameter | Minimum | Maximum |
+|-----------|---------|---------|
+| Bandwidth | 1MB | 9999GB |
+| Watermark | 20MB | 9999GB |
 
 ## Contribution
 
@@ -242,7 +262,3 @@ bwmcli –R 172.17.0.2 # Remove the offline classification of ingress traffic fo
 2. Create a Feat_*xxx* branch.
 3. Commit code.
 4. Create a pull request (PR).
-
-## Notes
-
-Use the file naming pattern `README_xx.md` to indicate a supported language (for example, `README_EN.md`).
