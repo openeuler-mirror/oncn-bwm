@@ -30,15 +30,20 @@
 ## 软件架构
 ```
 oncn-bwm
-│  bwmcli.c # bwmcli命令行工具
-│  bwmcli.h
+│  bwmcli.c          # bwmcli命令行工具
+│  bwmcli.h          # 头文件及常量定义
 │  CMakeLists.txt
 │  LICENSE
 │  README.md
 │
-├─bpf # 三个ebpf程序文件实现带宽管理逻辑
+├─bpf                # eBPF程序实现带宽管理逻辑
+│  ├─bwm_prio_kern.c # cgroup优先级设置程序，通过cgroup_skb/egress钩子设置数据包优先级
+│  ├─bwm_tc.c        # 出向带宽管理TC程序，通过cgroup classid区分在线/离线流量
+│  ├─bwm_tc_i.c      # 入向带宽管理TC程序，通过解析目标IP区分在线/离线流量
+│  ├─bwm_tc.h        # 共享数据结构定义（带宽配置、限流状态、统计信息）
+│  └─bwm_tc_common.h # 内联辅助函数（在线/离线流量处理、速率调整、限流初始化）
 │
-└─tools # 在离线带宽检测工具，基于bpftrace
+└─tools              # 在离线带宽检测工具，基于bpftrace
 ```
 
 ## 安装教程
@@ -56,35 +61,39 @@ oncn-bwm
 ## 使用说明
 
 ### 接口说明
-**接口1**
 
-说明
+**接口1：网卡QoS使能/除能**
 ```
-bwmcli –e/-d ethx 使能/除能某个网卡的Qos功能
-bwmcli –e/-d 使能/除能所有网卡的Qos功能
-bwmcli -E/-D ethx 使能/除能某个网卡的入向Qos功能
-bwmcli –E/-D 使能/除能所有网卡的入向Qos功能
+bwmcli -e/-d ethx    # 使能/除能某个网卡的出向QoS功能
+bwmcli -e/-d         # 使能/除能所有网卡的出向QoS功能
+bwmcli -E/-D ethx    # 使能/除能某个网卡的入向QoS功能
+bwmcli -E/-D         # 使能/除能所有网卡的入向QoS功能
+bwmcli -v            # 显示版本号
 ```
 示例
-```
-# bwmcli –e eth0 –e eth1
+```bash
+# bwmcli -e eth0 -e eth1
 enable eth0 success
 enable eth1 success
 
-# bwmcli –d eth0 –d eth1
+# bwmcli -d eth0 -d eth1
 disable eth0 success
 disable eth1 success
+
+# bwmcli -v
+version: 1.0
 ```
 
-**接口2**
-
-说明(用于出向)
+**接口2：cgroup优先级设置（出向）**
 ```
-bwmcli –s path <prio> 设置某个cgroup的优先级
-bwmcli –p path 查询某个cgroup的优先级
+bwmcli -s path <prio>  # 设置某个cgroup的优先级（支持cgroup v1/v2）
+bwmcli -p path         # 查询某个cgroup的优先级
 ```
+- 优先级0表示在线业务，-1表示离线业务
+- cgroup v1路径示例：`/sys/fs/cgroup/net_cls/xxx`
+- cgroup v2路径示例：`/sys/fs/cgroup/xxx`
 示例
-```
+```bash
 # bwmcli -s /sys/fs/cgroup/net_cls/test_online 0
 set prio success
 
@@ -92,118 +101,128 @@ set prio success
 prio is 0
 ```
 
-**接口3**	
-
-说明(用于入向)
+**接口3：IP优先级设置（入向）**
 ```
-bwmcli –A 172.17.0.2 标识对应ip入向流为离线流量
-bwmcli –R 172.17.0.2 标识对应ip入向流为在线流量
+bwmcli -A <ip>  # 标识对应IP入向流为离线流量
+bwmcli -R <ip>  # 标识对应IP入向流为在线流量
 ```
-示例	
-```
-# bwmcli –A 172.17.0.2
+- 未配置的IP默认为在线业务
+示例
+```bash
+# bwmcli -A 172.17.0.2
 AddIp 172.17.0.2 success
-# bwmcli –R 172.17.0.2
+# bwmcli -R 172.17.0.2
 RemoveIp 172.17.0.2 success
 ```
 
-**接口4**	
-
-说明
+**接口4：带宽限制设置**
 ```
-bwmcli –s bandwidth <low,high> 设置离线带宽
-bwmcli –p bandwidth 查询离线带宽
-bwmcli –S bandwidth <low,high> 设置入向离线带宽
-bwmcli –P bandwidth 查询入向离线带宽
+bwmcli -s bandwidth <low,high>  # 设置出向离线带宽
+bwmcli -p bandwidth              # 查询出向离线带宽
+bwmcli -S bandwidth <low,high>  # 设置入向离线带宽
+bwmcli -P bandwidth              # 查询入向离线带宽
 ```
+- 带宽范围：1MB ~ 9999GB
+- low：离线业务低带宽（水线触发时使用）
+- high：离线业务高带宽（水线未触发时使用）
 示例
-```
+```bash
 # bwmcli -s bandwidth 30mb,100mb
-set bandwidth success
-# bwmcli -S bandwidth 30mb,100mb
 set bandwidth success
 
 # bwmcli -p bandwidth
 bandwidth is 31457280(B),104857600(B)
-# bwmcli -P bandwidth
-bandwidth is 31457280(B),104857600(B)
 ```
 
-**接口5**	
-
-说明
+**接口5：水线设置**
 ```
-bwmcli –s waterline <val> 设置在线水线
-bwmcli –p waterline 查询在线水线
-bwmcli –S waterline <val> 设置入向在线水线
-bwmcli –P waterline 查询入向在线水线
+bwmcli -s waterline <val>  # 设置出向在线业务水线
+bwmcli -p waterline        # 查询出向在线业务水线
+bwmcli -S waterline <val>  # 设置入向在线业务水线
+bwmcli -P waterline        # 查询入向在线业务水线
 ```
-示例	
-```
+- 水线范围：20MB ~ 9999GB
+- 在线带宽低于水线时，离线业务可使用高带宽
+- 在线带宽高于水线时，离线业务限用低带宽
+- 判断间隔：10ms
+示例
+```bash
 # bwmcli -s waterline 20mb
-set waterline success
-# bwmcli -S waterline 20mb
 set waterline success
 
 # bwmcli -p waterline
 waterline is 20971520 (B)
-# bwmcli -P waterline
-waterline is 20971520 (B)
 ```
 
-**接口6**	
-
-说明
+**接口6：流量统计信息**
 ```
-bwmcli –p stats 打印出向流量内部统计信息
-bwmcli –P stats 打印入向流量内部统计信息
+bwmcli -p stats  # 打印出向流量内部统计信息
+bwmcli -P stats  # 打印入向流量内部统计信息
 ```
 示例
-```
+```bash
 # bwmcli -p stats
 offline_target_bandwidth: 104857600
 online_pkts: 982
 offline_pkts: 0
 online_rate: 28190
 offline_rate: 0
-
-# bwmcli –P stats
-offline_target_bandwidth: 1073741824
-online_pkts: 1150
-offline_pkts: 0
-online_rate: 27306
-offline_rate: 0
 ```
 
-**接口7**	
-
-说明
+**接口7：网卡状态查询**
 ```
-bwmcli –p devs 描述系统上所有网卡的使能状态
+bwmcli -p devs  # 描述系统上所有网卡的出向使能状态
+bwmcli -P devs  # 描述系统上所有网卡的入向使能状态
 ```
-示例	
-```
-# bwmcli –p devs
+示例
+```bash
+# bwmcli -p devs
 lo              : disabled
 enp2s2          : disabled
+eth0            : egress enabled
 
-# bwmcli –P devs
-lo              : disabled
-enp2s2          : disabled
+# bwmcli -P devs
+veth123456      : ingress enabled
 ```
 
 ### 典型使用案例
+```bash
+# 1. 查看当前网卡状态
+bwmcli -p devs
+
+# 2. 配置Pod出向QoS（假设Pod使用cgroup v1）
+bwmcli -s /sys/fs/cgroup/net_cls/online 0      # 标记在线业务
+bwmcli -s /sys/fs/cgroup/net_cls/offline -1    # 标记离线业务
+bwmcli -e eth0                                   # 使能eth0出向QoS
+
+# 3. 配置离线业务带宽限制
+bwmcli -s bandwidth 20mb,1gb  # 设置带宽：低=20MB，高=1GB
+bwmcli -s waterline 30mb      # 设置水线：30MB
+
+# 4. 配置Pod入向QoS（宿主侧）
+bwmcli -E veth123456          # 使能veth123456入向QoS
+bwmcli -A 172.17.0.2          # 标记IP为离线流
+bwmcli -R 172.17.0.2          # 移除离线标记
+
+# 5. 查询配置
+bwmcli -p bandwidth            # 查询出向带宽配置
+bwmcli -p waterline           # 查询出水线配置
+bwmcli -p stats               # 查看流量统计
 ```
-bwmcli -p devs 查询系统当前网卡使能状态
-bwmcli -s /sys/fs/cgroup/net_cls/online 0
-bwmcli -s /sys/fs/cgroup/net_cls/offline -1
-bwmcli -e eth0 使能eth0的网卡 Qos功能
-bwmcli -s bandwidth 20mb,1gb 配置离线业务带宽
-bwmcli -s waterline 30mb 配置在线业务的水线
-bwmcli -E veth123456 使能veth123456的网卡(宿主侧) Qos功能(对应pod入向流量)
-bwmcli –A 172.17.0.2 配置目标ip标识入向离线流
-bwmcli –R 172.17.0.2 删除目标ip标识入向离线流
-```
+
+## 默认配置值
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| 水线(waterline) | 20MB | 在线业务水线阈值 |
+| 低带宽(low_rate) | 20MB | 水线触发时离线业务可用带宽 |
+| 高带宽(high_rate) | 1GB | 水线未触发时离线业务可用带宽 |
+| 判断间隔 | 10ms | 在线带宽是否超过水线的检测周期 |
+
+## 带宽与水线限制
+| 参数 | 最小值 | 最大值 |
+|------|--------|--------|
+| 带宽(bandwidth) | 1MB | 9999GB |
+| 水线(waterline) | 20MB | 9999GB |
 
 ## 参与贡献
 
@@ -211,13 +230,3 @@ bwmcli –R 172.17.0.2 删除目标ip标识入向离线流
 2.  新建 Feat_xxx 分支
 3.  提交代码
 4.  新建 Pull Request
-
-
-## 特技
-
-1.  使用 Readme\_XXX.md 来支持不同的语言，例如 Readme\_en.md, Readme\_zh.md
-2.  Gitee 官方博客 [blog.gitee.com](https://blog.gitee.com)
-3.  你可以 [https://gitee.com/explore](https://gitee.com/explore) 这个地址来了解 Gitee 上的优秀开源项目
-4.  [GVP](https://gitee.com/gvp) 全称是 Gitee 最有价值开源项目，是综合评定出的优秀开源项目
-5.  Gitee 官方提供的使用手册 [https://gitee.com/help](https://gitee.com/help)
-6.  Gitee 封面人物是一档用来展示 Gitee 会员风采的栏目 [https://gitee.com/gitee-stars/](https://gitee.com/gitee-stars/)
